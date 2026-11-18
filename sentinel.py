@@ -143,6 +143,7 @@ def main(argv=None) -> int:
     p.add_argument("--team", choices=("blue", "red", "yellow", "appsec", "devops"))
     p.add_argument("--tool", help="run one tool by name")
     p.add_argument("--list", action="store_true", help="list tools for the selected team")
+    p.add_argument("--out", help="write the JSON envelope to a file instead of stdout")
     args = p.parse_args(argv)
     if args.list:
         names = [n for n in sorted(TEAMS) if not args.team or args.team in TEAMS[n]]
@@ -151,8 +152,11 @@ def main(argv=None) -> int:
     if not args.file:
         p.error("file is required unless --list is used")
     doc = run(Path(args.file), args.team, args.tool)
-    json.dump(doc, sys.stdout, indent=2)
-    print()
+    if args.out:
+        Path(args.out).write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    else:
+        json.dump(doc, sys.stdout, indent=2)
+        print()
     bad = any(r.get("count", 1 if r.get("error") else 0) for r in doc["results"])
     return 1 if bad else 0
 

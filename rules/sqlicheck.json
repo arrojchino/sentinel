@@ -1,0 +1,9 @@
+{
+  "patterns": [
+    "'\\s*or\\s*1=1",
+    "union\\s+select",
+    ";\\s*drop\\s+table"
+  ],
+  "type": "regex",
+  "name": "sqlicheck"
+}

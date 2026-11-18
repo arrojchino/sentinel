@@ -1,0 +1,9 @@
+{
+  "required": [
+    "check_id",
+    "path",
+    "start"
+  ],
+  "type": "jsonfields",
+  "name": "semgrepparse"
+}

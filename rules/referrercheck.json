@@ -1,0 +1,10 @@
+{
+  "required": [
+    "Referrer-Policy"
+  ],
+  "patterns": {
+    "Referrer-Policy": "no-referrer|strict-origin"
+  },
+  "type": "headers",
+  "name": "referrercheck"
+}

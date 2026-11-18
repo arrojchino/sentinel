@@ -5,5 +5,9 @@
     "open_proof_gap"
   ],
   "type": "states",
-  "name": "evidencestate"
+  "name": "evidencestate",
+  "terminal_states": [
+    "confirmed",
+    "ruled_out"
+  ]
 }

@@ -6,5 +6,6 @@
     "verify"
   ],
   "type": "allowlist",
-  "name": "toolallow"
+  "name": "toolallow",
+  "require_authorization": true
 }

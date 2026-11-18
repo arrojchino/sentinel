@@ -1,0 +1,7 @@
+{
+  "required": [
+    "Expect-CT"
+  ],
+  "type": "headers",
+  "name": "expectctcheck"
+}

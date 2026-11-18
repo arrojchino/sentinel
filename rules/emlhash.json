@@ -1,0 +1,5 @@
+{
+  "note": "raw file SHA-256 plus From, To, Subject and Received headers",
+  "type": "hash",
+  "name": "emlhash"
+}

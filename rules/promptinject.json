@@ -1,0 +1,10 @@
+{
+  "patterns": [
+    "ignore previous",
+    "disregard all",
+    "system prompt",
+    "jailbreak"
+  ],
+  "type": "regex",
+  "name": "promptinject"
+}

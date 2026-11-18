@@ -1,0 +1,11 @@
+{
+  "patterns": [
+    "^title:",
+    "^id:",
+    "^logsource:",
+    "^detection:",
+    "^condition:"
+  ],
+  "type": "regex",
+  "name": "sigmacheck"
+}

@@ -1,0 +1,9 @@
+{
+  "required": [
+    "max_seconds",
+    "max_bytes",
+    "max_findings"
+  ],
+  "type": "jsonfields",
+  "name": "budgetcheck"
+}

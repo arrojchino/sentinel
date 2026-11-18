@@ -1,0 +1,9 @@
+{
+  "required": [
+    "Parameter",
+    "Technique",
+    "Payload"
+  ],
+  "type": "csvcols",
+  "name": "sqlmapparse"
+}

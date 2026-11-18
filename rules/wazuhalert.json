@@ -2,9 +2,11 @@
   "required": [
     "timestamp",
     "rule",
-    "agent",
-    "srcip"
+    "agent"
   ],
   "type": "jsonfields",
-  "name": "wazuhalert"
+  "name": "wazuhalert",
+  "optional": [
+    "srcip"
+  ]
 }

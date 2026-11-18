@@ -1,0 +1,10 @@
+{
+  "required": [
+    "timestamp",
+    "rule",
+    "agent",
+    "srcip"
+  ],
+  "type": "jsonfields",
+  "name": "wazuhalert"
+}

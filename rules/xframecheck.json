@@ -1,0 +1,10 @@
+{
+  "required": [
+    "X-Frame-Options"
+  ],
+  "patterns": {
+    "X-Frame-Options": "DENY|SAMEORIGIN"
+  },
+  "type": "headers",
+  "name": "xframecheck"
+}

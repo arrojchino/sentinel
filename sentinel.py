@@ -12,12 +12,21 @@ import io
 import json
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 RULES = HERE / "rules"
 TEAMS = json.loads((HERE / "teams.json").read_text(encoding="utf-8"))
 SCHEMA = 1
+
+
+def has_key(obj, key: str) -> bool:
+    if isinstance(obj, dict):
+        return key in obj or any(has_key(v, key) for v in obj.values())
+    if isinstance(obj, list):
+        return any(has_key(v, key) for v in obj)
+    return False
 
 
 def check(text: str, rules: dict, path: Path) -> list:
@@ -56,10 +65,23 @@ def check(text: str, rules: dict, path: Path) -> list:
                 if str(item.get(key)) == forbidden:
                     out.append({"kind": "forbidden_value", "value": key})
     elif kind == "csvcols":
-        cols = set(csv.DictReader(io.StringIO(text)).fieldnames or [])
+        reader = csv.DictReader(io.StringIO(text))
+        cols = set(reader.fieldnames or [])
         for key in rules["required"]:
             if key not in cols:
                 out.append({"kind": "missing_column", "value": key})
+        if rules.get("verify_sha256") and {"path", "sha256"} <= cols:
+            for row in reader:
+                target = (path.parent / row["path"]).resolve()
+                if not target.is_file():
+                    out.append({"kind": "missing_evidence", "value": row["path"]})
+                    continue
+                actual = hashlib.sha256(target.read_bytes()).hexdigest()
+                if actual != row["sha256"].strip().lower():
+                    out.append({"kind": "hash_mismatch", "value": row["path"]})
+                if rules.get("verify_size") and "size" in cols:
+                    if str(target.stat().st_size) != str(row["size"]).strip():
+                        out.append({"kind": "size_mismatch", "value": row["path"]})
     elif kind == "hash":
         out.append({"kind": "sha256", "value": hashlib.sha256(path.read_bytes()).hexdigest()})
         for line in text.splitlines():
@@ -71,13 +93,23 @@ def check(text: str, rules: dict, path: Path) -> list:
         if state not in rules["states"]:
             out.append({"kind": "invalid_state", "value": str(state)})
         for key in rules.get("required", []):
-            if key not in str(obj):
+            if not has_key(obj, key):
                 out.append({"kind": "missing_evidence", "value": key})
+        if rules.get("terminal_states") and state not in rules["terminal_states"]:
+            out.append({"kind": "unresolved_state", "value": str(state)})
     elif kind == "allowlist":
         obj = json.loads(text)
         name = obj.get("tool") if isinstance(obj, dict) else None
         if name not in rules["allowed"]:
             out.append({"kind": "tool_not_allowed", "value": str(name)})
+        if rules.get("require_authorization"):
+            today = datetime.now(timezone.utc).date().isoformat()
+            for key in ("scope_ref", "approver", "expires_at"):
+                if not has_key(obj, key):
+                    out.append({"kind": "missing_authorization", "value": key})
+            expires = obj.get("expires_at") if isinstance(obj, dict) else None
+            if expires and str(expires) < today:
+                out.append({"kind": "expired_authorization", "value": str(expires)})
     else:
         raise ValueError("unknown rule type: " + kind)
     return out
@@ -117,7 +149,8 @@ def main(argv=None) -> int:
     doc = run(Path(args.file), args.team, args.tool)
     json.dump(doc, sys.stdout, indent=2)
     print()
-    return 0
+    bad = any(r.get("count", 1 if r.get("error") else 0) for r in doc["results"])
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":

@@ -1,0 +1,10 @@
+{
+  "required": [
+    "Content-Length"
+  ],
+  "forbidden": {
+    "Transfer-Encoding": "chunked"
+  },
+  "type": "headers",
+  "name": "smugglecheck"
+}

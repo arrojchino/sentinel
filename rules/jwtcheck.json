@@ -1,0 +1,12 @@
+{
+  "required": [
+    "alg",
+    "exp",
+    "sub"
+  ],
+  "forbidden_values": {
+    "alg": "none"
+  },
+  "type": "jsonfields",
+  "name": "jwtcheck"
+}

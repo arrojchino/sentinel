@@ -1,0 +1,10 @@
+{
+  "required": [
+    "Name",
+    "Direction",
+    "Action",
+    "Enabled"
+  ],
+  "type": "csvcols",
+  "name": "ruletraceparse"
+}

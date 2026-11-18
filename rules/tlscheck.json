@@ -1,0 +1,10 @@
+{
+  "patterns": [
+    "TLSv1\\.0",
+    "SSLv3",
+    "RC4",
+    "3DES"
+  ],
+  "type": "regex",
+  "name": "tlscheck"
+}

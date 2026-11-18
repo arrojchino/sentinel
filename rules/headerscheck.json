@@ -1,0 +1,10 @@
+{
+  "required": [
+    "Strict-Transport-Security",
+    "Content-Security-Policy",
+    "X-Content-Type-Options",
+    "Referrer-Policy"
+  ],
+  "type": "headers",
+  "name": "headerscheck"
+}

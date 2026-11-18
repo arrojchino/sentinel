@@ -53,8 +53,12 @@ def check(text: str, rules: dict, path: Path) -> list:
             for m in re.finditer(pat, text, re.I | re.M):
                 out.append({"kind": "pattern", "value": m.group(0)[:120]})
     elif kind == "jsonfields":
-        obj = json.loads(text)
-        for item in obj if isinstance(obj, list) else [obj]:
+        try:
+            obj = json.loads(text)
+            items = obj if isinstance(obj, list) else [obj]
+        except json.JSONDecodeError:
+            items = [json.loads(line) for line in text.splitlines() if line.strip()]
+        for item in items:
             for key in rules["required"]:
                 if key not in item:
                     out.append({"kind": "missing_field", "value": key})

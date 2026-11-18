@@ -1,0 +1,9 @@
+{
+  "required": [
+    "idle_timeout",
+    "secure",
+    "httponly"
+  ],
+  "type": "jsonfields",
+  "name": "sessioncheck"
+}

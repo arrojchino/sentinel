@@ -1,0 +1,9 @@
+{
+  "patterns": [
+    "rO0AB",
+    "\\bjava\\.lang\\.Runtime",
+    "O:8:\"stdClass\""
+  ],
+  "type": "regex",
+  "name": "deserialcheck"
+}

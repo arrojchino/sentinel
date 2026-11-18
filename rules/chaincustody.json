@@ -1,0 +1,10 @@
+{
+  "required": [
+    "path",
+    "sha256",
+    "size",
+    "role"
+  ],
+  "type": "csvcols",
+  "name": "chaincustody"
+}

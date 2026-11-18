@@ -1,0 +1,8 @@
+{
+  "patterns": [
+    "\\.\\./\\.\\./",
+    "%2e%2e%2f"
+  ],
+  "type": "regex",
+  "name": "pathcheck"
+}

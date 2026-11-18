@@ -1,0 +1,7 @@
+{
+  "patterns": [
+    "CNAME.*(github\\.io|s3\\.amazonaws\\.com|azurewebsites\\.net)"
+  ],
+  "type": "regex",
+  "name": "subdomaincheck"
+}

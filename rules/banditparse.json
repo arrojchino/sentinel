@@ -1,0 +1,9 @@
+{
+  "required": [
+    "filename",
+    "issue_text",
+    "issue_severity"
+  ],
+  "type": "jsonfields",
+  "name": "banditparse"
+}

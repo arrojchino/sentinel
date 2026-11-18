@@ -1,0 +1,15 @@
+{
+  "states": [
+    "unverified",
+    "confirmed",
+    "ruled_out",
+    "open_proof_gap"
+  ],
+  "required": [
+    "tool_call",
+    "reported_execution",
+    "observed_effect"
+  ],
+  "type": "states",
+  "name": "traceverify"
+}

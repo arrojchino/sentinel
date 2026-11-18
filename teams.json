@@ -37,12 +37,6 @@
   "emlhash": [
     "blue"
   ],
-  "logfilter": [
-    "blue"
-  ],
-  "baseline": [
-    "blue"
-  ],
   "sqlicheck": [
     "red"
   ],
@@ -155,12 +149,6 @@
   "promptinject": [
     "yellow"
   ],
-  "attacktree": [
-    "yellow"
-  ],
-  "controlmap": [
-    "yellow"
-  ],
   "headerscheck": [
     "appsec"
   ],
@@ -224,9 +212,6 @@
   ],
   "niktoparse": [
     "appsec"
-  ],
-  "rulesync": [
-    "devops"
   ],
   "tlscheck": [
     "appsec"

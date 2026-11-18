@@ -1,0 +1,10 @@
+{
+  "required": [
+    "Name",
+    "Direction",
+    "Action",
+    "RemoteAddress"
+  ],
+  "type": "csvcols",
+  "name": "firewallparse"
+}

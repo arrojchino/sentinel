@@ -1,0 +1,10 @@
+{
+  "required": [
+    "Content-Security-Policy"
+  ],
+  "patterns": {
+    "Content-Security-Policy": "default-src|script-src"
+  },
+  "type": "headers",
+  "name": "cspcheck"
+}

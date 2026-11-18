@@ -1,0 +1,10 @@
+{
+  "allowed": [
+    "read_file",
+    "search",
+    "report",
+    "verify"
+  ],
+  "type": "allowlist",
+  "name": "toolallow"
+}

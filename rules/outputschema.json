@@ -1,0 +1,10 @@
+{
+  "required": [
+    "schema_version",
+    "report_id",
+    "generated_at",
+    "findings"
+  ],
+  "type": "jsonfields",
+  "name": "outputschema"
+}

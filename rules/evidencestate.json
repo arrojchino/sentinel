@@ -1,0 +1,9 @@
+{
+  "states": [
+    "confirmed",
+    "ruled_out",
+    "open_proof_gap"
+  ],
+  "type": "states",
+  "name": "evidencestate"
+}

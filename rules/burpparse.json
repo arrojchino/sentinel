@@ -1,0 +1,10 @@
+{
+  "required": [
+    "Host",
+    "Path",
+    "Severity",
+    "Issue"
+  ],
+  "type": "csvcols",
+  "name": "burpparse"
+}

@@ -1,0 +1,10 @@
+{
+  "required": [
+    "expires_at"
+  ],
+  "max_fields": {
+    "expires_at": 86400
+  },
+  "type": "jsonfields",
+  "name": "tokenexpiry"
+}

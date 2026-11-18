@@ -11,5 +11,9 @@
     "observed_effect"
   ],
   "type": "states",
-  "name": "traceverify"
+  "name": "traceverify",
+  "terminal_states": [
+    "confirmed",
+    "ruled_out"
+  ]
 }

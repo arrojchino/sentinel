@@ -1,0 +1,10 @@
+{
+  "required": [
+    "Access-Control-Allow-Origin"
+  ],
+  "forbidden": {
+    "Access-Control-Allow-Origin": "\\*"
+  },
+  "type": "headers",
+  "name": "corscheck"
+}

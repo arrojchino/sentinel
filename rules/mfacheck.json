@@ -1,0 +1,8 @@
+{
+  "required": [
+    "mfa_required",
+    "method"
+  ],
+  "type": "jsonfields",
+  "name": "mfacheck"
+}

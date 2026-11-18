@@ -1,0 +1,9 @@
+{
+  "patterns": [
+    "^.*\\s+IN\\s+SPF",
+    "^.*\\s+IN\\s+DMARC",
+    "^.*\\s+IN\\s+CAA"
+  ],
+  "type": "regex",
+  "name": "dnscheck"
+}

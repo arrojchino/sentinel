@@ -1,0 +1,15 @@
+{
+  "required": [
+    "role",
+    "resource",
+    "decision"
+  ],
+  "allowed": {
+    "decision": [
+      "allow",
+      "deny"
+    ]
+  },
+  "type": "jsonfields",
+  "name": "authzmatrix"
+}

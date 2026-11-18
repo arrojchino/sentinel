@@ -1,0 +1,9 @@
+{
+  "patterns": [
+    "url=https?://",
+    "redirect=https?://",
+    "next=https?://"
+  ],
+  "type": "regex",
+  "name": "redirectcheck"
+}

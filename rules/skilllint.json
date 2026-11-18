@@ -1,0 +1,9 @@
+{
+  "patterns": [
+    "^name:",
+    "^description:",
+    "^## When to Use"
+  ],
+  "type": "regex",
+  "name": "skilllint"
+}

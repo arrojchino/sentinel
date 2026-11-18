@@ -1,0 +1,9 @@
+{
+  "patterns": [
+    ";\\s*(cat|whoami|id)",
+    "\\|\\s*(sh|bash)",
+    "`\\w+`"
+  ],
+  "type": "regex",
+  "name": "cmdcheck"
+}

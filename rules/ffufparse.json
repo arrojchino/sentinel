@@ -1,0 +1,9 @@
+{
+  "required": [
+    "url",
+    "status",
+    "length"
+  ],
+  "type": "csvcols",
+  "name": "ffufparse"
+}

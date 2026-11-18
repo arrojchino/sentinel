@@ -1,0 +1,10 @@
+{
+  "required": [
+    "intent",
+    "tool",
+    "result",
+    "effect"
+  ],
+  "type": "jsonfields",
+  "name": "decisionlog"
+}

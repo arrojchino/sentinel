@@ -1,0 +1,9 @@
+{
+  "patterns": [
+    "Registrar:",
+    "Expiry Date:",
+    "Name Server:"
+  ],
+  "type": "regex",
+  "name": "whoisparse"
+}

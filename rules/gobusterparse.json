@@ -1,0 +1,8 @@
+{
+  "required": [
+    "path",
+    "status"
+  ],
+  "type": "csvcols",
+  "name": "gobusterparse"
+}

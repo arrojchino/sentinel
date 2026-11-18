@@ -1,0 +1,10 @@
+{
+  "patterns": [
+    "OpenSSH_\\d",
+    "Apache/\\d",
+    "nginx/\\d",
+    "MySQL \\d"
+  ],
+  "type": "regex",
+  "name": "bannercheck"
+}

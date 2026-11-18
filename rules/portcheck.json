@@ -1,0 +1,7 @@
+{
+  "patterns": [
+    "(23|445|3389|1433|3306)/tcp"
+  ],
+  "type": "regex",
+  "name": "portcheck"
+}

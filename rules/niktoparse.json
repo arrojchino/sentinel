@@ -1,0 +1,10 @@
+{
+  "required": [
+    "Host",
+    "Port",
+    "Severity",
+    "Description"
+  ],
+  "type": "csvcols",
+  "name": "niktoparse"
+}

@@ -1,0 +1,8 @@
+{
+  "patterns": [
+    "\\.(php|jsp|asp|exe)$",
+    "\\.htaccess"
+  ],
+  "type": "regex",
+  "name": "uploadcheck"
+}

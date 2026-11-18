@@ -1,0 +1,9 @@
+{
+  "required": [
+    "Target",
+    "VulnerabilityID",
+    "Severity"
+  ],
+  "type": "jsonfields",
+  "name": "trivyparse"
+}

@@ -1,0 +1,8 @@
+{
+  "patterns": [
+    "sha1WithRSA",
+    "Not After : .*20(1[0-9]|2[0-3])"
+  ],
+  "type": "regex",
+  "name": "certcheck"
+}

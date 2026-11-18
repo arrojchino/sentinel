@@ -1,0 +1,10 @@
+{
+  "required": [
+    "Set-Cookie"
+  ],
+  "patterns": {
+    "Set-Cookie": "SameSite="
+  },
+  "type": "headers",
+  "name": "samesitecheck"
+}

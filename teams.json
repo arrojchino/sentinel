@@ -1,0 +1,234 @@
+{
+  "wazuhalert": [
+    "blue"
+  ],
+  "ruletraceparse": [
+    "blue"
+  ],
+  "netpulseparse": [
+    "blue"
+  ],
+  "firewallparse": [
+    "blue"
+  ],
+  "sigmacheck": [
+    "blue"
+  ],
+  "yaracheck": [
+    "blue"
+  ],
+  "iocmatch": [
+    "blue"
+  ],
+  "timelinebuild": [
+    "blue"
+  ],
+  "chaincustody": [
+    "blue",
+    "devops"
+  ],
+  "manifestcheck": [
+    "blue",
+    "devops"
+  ],
+  "traceverify": [
+    "blue"
+  ],
+  "emlhash": [
+    "blue"
+  ],
+  "logfilter": [
+    "blue"
+  ],
+  "baseline": [
+    "blue"
+  ],
+  "sqlicheck": [
+    "red"
+  ],
+  "xsscheck": [
+    "red"
+  ],
+  "ssrfcheck": [
+    "red"
+  ],
+  "redirectcheck": [
+    "red"
+  ],
+  "uploadcheck": [
+    "red"
+  ],
+  "pathcheck": [
+    "red"
+  ],
+  "deserialcheck": [
+    "red"
+  ],
+  "templatecheck": [
+    "red"
+  ],
+  "cmdcheck": [
+    "red"
+  ],
+  "smugglecheck": [
+    "red"
+  ],
+  "nmaplite": [
+    "red"
+  ],
+  "bannercheck": [
+    "red"
+  ],
+  "portcheck": [
+    "red"
+  ],
+  "dnscheck": [
+    "red"
+  ],
+  "certcheck": [
+    "red"
+  ],
+  "subdomaincheck": [
+    "red"
+  ],
+  "asnlookup": [
+    "red"
+  ],
+  "iprangecheck": [
+    "red"
+  ],
+  "whoisparse": [
+    "red"
+  ],
+  "apikeycheck": [
+    "red",
+    "devops"
+  ],
+  "jwtcheck": [
+    "red"
+  ],
+  "oauthcheck": [
+    "red"
+  ],
+  "authzmatrix": [
+    "yellow"
+  ],
+  "passwordpolicy": [
+    "yellow"
+  ],
+  "mfacheck": [
+    "yellow"
+  ],
+  "sessioncheck": [
+    "yellow"
+  ],
+  "tokenexpiry": [
+    "yellow"
+  ],
+  "toolallow": [
+    "yellow"
+  ],
+  "scoperules": [
+    "yellow"
+  ],
+  "evidencestate": [
+    "yellow"
+  ],
+  "redactioncheck": [
+    "yellow",
+    "devops"
+  ],
+  "decisionlog": [
+    "yellow"
+  ],
+  "outputschema": [
+    "yellow",
+    "devops"
+  ],
+  "budgetcheck": [
+    "yellow",
+    "devops"
+  ],
+  "skilllint": [
+    "yellow"
+  ],
+  "promptinject": [
+    "yellow"
+  ],
+  "attacktree": [
+    "yellow"
+  ],
+  "controlmap": [
+    "yellow"
+  ],
+  "headerscheck": [
+    "appsec"
+  ],
+  "hstscheck": [
+    "appsec"
+  ],
+  "cspcheck": [
+    "appsec"
+  ],
+  "corscheck": [
+    "appsec"
+  ],
+  "csrfcheck": [
+    "appsec"
+  ],
+  "samesitecheck": [
+    "appsec"
+  ],
+  "cookiecheck": [
+    "appsec"
+  ],
+  "xframecheck": [
+    "appsec"
+  ],
+  "referrercheck": [
+    "appsec"
+  ],
+  "expectctcheck": [
+    "appsec"
+  ],
+  "zapparse": [
+    "appsec"
+  ],
+  "burpparse": [
+    "appsec"
+  ],
+  "ffufparse": [
+    "appsec"
+  ],
+  "gobusterparse": [
+    "appsec"
+  ],
+  "sqlmapparse": [
+    "appsec"
+  ],
+  "trivyparse": [
+    "appsec",
+    "devops"
+  ],
+  "gitleaksparse": [
+    "appsec",
+    "devops"
+  ],
+  "semgrepparse": [
+    "appsec",
+    "devops"
+  ],
+  "banditparse": [
+    "appsec",
+    "devops"
+  ],
+  "niktoparse": [
+    "appsec"
+  ],
+  "rulesync": [
+    "devops"
+  ],
+  "tlscheck": [
+    "appsec"
+  ]
+}

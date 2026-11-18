@@ -6,5 +6,7 @@
     "role"
   ],
   "type": "csvcols",
-  "name": "chaincustody"
+  "name": "chaincustody",
+  "verify_sha256": true,
+  "verify_size": true
 }

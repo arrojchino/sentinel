@@ -1,0 +1,8 @@
+{
+  "patterns": [
+    "\\d+/tcp\\s+open",
+    "\\d+/udp\\s+open"
+  ],
+  "type": "regex",
+  "name": "nmaplite"
+}

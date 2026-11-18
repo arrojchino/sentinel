@@ -1,0 +1,9 @@
+{
+  "required": [
+    "redirect_uri",
+    "state",
+    "client_id"
+  ],
+  "type": "jsonfields",
+  "name": "oauthcheck"
+}

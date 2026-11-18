@@ -1,0 +1,9 @@
+{
+  "required": [
+    "RuleID",
+    "File",
+    "Commit"
+  ],
+  "type": "jsonfields",
+  "name": "gitleaksparse"
+}

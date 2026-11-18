@@ -1,0 +1,10 @@
+{
+  "required": [
+    "URL",
+    "Risk",
+    "Name",
+    "Solution"
+  ],
+  "type": "csvcols",
+  "name": "zapparse"
+}

@@ -1,0 +1,7 @@
+{
+  "patterns": [
+    "(api[_-]?key|token|password)\\s*[:=]\\s*\\S{12,}"
+  ],
+  "type": "regex",
+  "name": "redactioncheck"
+}

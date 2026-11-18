@@ -1,0 +1,10 @@
+{
+  "required": [
+    "proto",
+    "local",
+    "remote",
+    "state"
+  ],
+  "type": "jsonfields",
+  "name": "netpulseparse"
+}

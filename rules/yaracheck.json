@@ -1,0 +1,9 @@
+{
+  "patterns": [
+    "^rule\\s+\\w+",
+    "strings:",
+    "condition:"
+  ],
+  "type": "regex",
+  "name": "yaracheck"
+}

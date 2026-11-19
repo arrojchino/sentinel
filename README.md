@@ -41,6 +41,15 @@ python sentinel.py --team blue wazuh_alerts.json --out blue.json
 
 `releasegate.py` turns a findings JSON array or an envelope into `allow`/`deny`, with exit 0 or 1.
 
+## IOC and timeline
+
+`iocscan.py` extracts typed observables (IPv4, domain, MD5/SHA-1/SHA-256), suppresses private and reserved ranges, dedupes by value and reports source lines. `timeline.py` groups timestamped events into sessions by source with a configurable gap and flags long dwell.
+
+```bash
+python iocscan.py capture.txt --out ioc.json
+python timeline.py alerts.jsonl --gap 900 --max-span 3600
+```
+
 ## Limits
 
 Each check reports what its rules can see in the supplied file. A clean result is not proof of safety, and a finding is not a verdict. The bridge reads the alerts log file, not the Wazuh API.

@@ -463,6 +463,121 @@ class TimelineChecksTests(unittest.TestCase):
                              hashlib.sha256(src.read_bytes()).hexdigest())
 
 
+class TimelineCoverageTests(unittest.TestCase):
+    FIXTURE = (
+        '{"timestamp": "2026-01-01T08:00:00", "source": "a"}\n'
+        '{"timestamp": "2026-01-01T08:00:30", "source": "a"}\n'
+        '{"timestamp": "2026-01-01T12:00:00", "source": "b"}\n'
+    )
+
+    def test_window_fields_from_parseable_events(self):
+        rows = [json.loads(line) for line in self.FIXTURE.splitlines()]
+        w = tl.observation_window(rows)
+        self.assertEqual(w["oldest_event"], "2026-01-01T08:00:00")
+        self.assertEqual(w["newest_event"], "2026-01-01T12:00:00")
+        self.assertEqual(w["observation_span_seconds"], 14400)
+
+    def test_empty_and_unparseable_have_no_window(self):
+        self.assertEqual(tl.observation_window([]), {
+            "oldest_event": None, "newest_event": None,
+            "observation_span_seconds": None})
+        w = tl.observation_window([{"timestamp": "not-a-time"}, {"no": "stamp"}])
+        self.assertIsNone(w["oldest_event"])
+        self.assertIsNone(w["newest_event"])
+        self.assertIsNone(w["observation_span_seconds"])
+
+    def _result_with_window(self):
+        rows = [json.loads(line) for line in self.FIXTURE.splitlines()]
+        result = tl.sessions(rows, 9000, 3600)
+        result.update(tl.observation_window(rows))
+        result["source_files"] = [
+            tl.source_manifest("alerts.jsonl", self.FIXTURE.encode("utf-8"))]
+        return result
+
+    def test_coverage_check_closed_vocabulary_and_order(self):
+        rows = tl.checks(self._result_with_window())
+        self.assertEqual([r["check"] for r in rows],
+                         ["parse", "dwell", "provenance", "coverage"])
+        for row in rows:
+            self.assertIn(row["status"], tl.CHECK_STATUSES)
+            self.assertEqual(set(row), {"check", "status", "detail"})
+        cov = rows[3]
+        self.assertEqual(cov["status"], "confirmed")
+        self.assertIn("newest 2026-01-01T12:00:00", cov["detail"])
+        self.assertIn("span 14400s", cov["detail"])
+
+    def test_no_parseable_timestamp_is_not_confirmed_and_unreadable_is_skipped(self):
+        result = tl.observation_window([{"timestamp": "not-a-time"}])
+        result["source_files"] = [{"sha256": "x"}]
+        self.assertEqual(tl.checks(result)[-1]["status"], "not_confirmed")
+        self.assertEqual(tl.checks(result)[-1]["detail"],
+                         "no parseable event timestamp")
+        unreadable = tl.observation_window([])
+        cov = tl.checks(unreadable)[-1]
+        self.assertEqual(cov["status"], "skipped")
+        self.assertEqual(cov["detail"], "no readable input")
+
+    def test_default_checks_unchanged_without_coverage(self):
+        result = tl.sessions([], 900, 3600)
+        result["source_files"] = [{"sha256": "x"}]
+        self.assertEqual([r["check"] for r in tl.checks(result)],
+                         ["parse", "dwell", "provenance"])
+
+    def test_cli_opt_in_json_and_checks_bytes(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "alerts.jsonl"
+            src.write_text(self.FIXTURE, encoding="utf-8")
+            script = str(Path(tl.__file__))
+
+            def run(*extra):
+                p = subprocess.run([sys.executable, script, str(src), *extra],
+                                   capture_output=True)
+                self.assertEqual(p.stderr, b"")
+                self.assertEqual(p.stdout.count(b"\r"), 0)
+                return p.returncode, p.stdout
+
+            code, raw = run()
+            self.assertEqual(code, 0)
+            self.assertNotIn("newest_event", json.loads(raw))
+
+            code, raw = run("--coverage")
+            doc = json.loads(raw)
+            self.assertEqual(code, 0)
+            self.assertEqual(doc["newest_event"], "2026-01-01T12:00:00")
+            self.assertEqual(doc["oldest_event"], "2026-01-01T08:00:00")
+            self.assertEqual(doc["observation_span_seconds"], 14400)
+            self.assertEqual([c["check"] for c in doc["checks"]],
+                             ["parse", "dwell", "provenance", "coverage"])
+
+            code, raw = run("--checks")
+            self.assertEqual(len(list(csv.reader(io.StringIO(raw.decode())))), 4)
+            code, raw = run("--checks", "--coverage")
+            rows = list(csv.reader(io.StringIO(raw.decode())))
+            self.assertEqual(len(rows), 5)
+            self.assertEqual(rows[4][0], "coverage")
+            self.assertEqual(rows[4][1], "confirmed")
+
+    def test_zero_dwell_states_its_window(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "alerts.jsonl"
+            src.write_text(
+                '{"timestamp": "2026-01-01T08:00:00", "source": "a"}\n'
+                '{"timestamp": "2026-01-01T08:00:30", "source": "a"}\n',
+                encoding="utf-8")
+            p = subprocess.run(
+                [sys.executable, str(Path(tl.__file__)), str(src),
+                 "--checks", "--coverage"], capture_output=True)
+            self.assertEqual(p.returncode, 0)
+            self.assertEqual(p.stderr, b"")
+            self.assertEqual(p.stdout.count(b"\r"), 0)
+            by_check = {r[0]: r for r in
+                        list(csv.reader(io.StringIO(p.stdout.decode())))[1:]}
+            self.assertEqual(by_check["dwell"],
+                             ["dwell", "confirmed", "0 long dwell(s)"])
+            self.assertEqual(by_check["coverage"][1], "confirmed")
+            self.assertIn("span 30s", by_check["coverage"][2])
+
+
 class IocSelftestTests(unittest.TestCase):
     def setUp(self):
         self.base = Path(ioc.__file__).resolve().parent

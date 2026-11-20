@@ -46,6 +46,33 @@ def sessions(rows: list[dict], gap_seconds: int, max_span_seconds: int) -> dict:
     return {"schema_version": 1, "sessions": len(groups), "groups": groups}
 
 
+def observation_window(rows: list[dict]) -> dict:
+    """Describe the window the timeline actually observed.
+
+    A zero long-dwell count is only meaningful beside the span of events that
+    produced it. This returns the oldest and newest parseable timestamps and
+    the whole-second span between them; a single event has a zero span. With no
+    parseable event it returns null fields rather than a fabricated window.
+    Rows with a missing or unparseable timestamp are ignored, matching the
+    grouping rule in :func:`sessions`.
+    """
+    stamps = []
+    for row in rows:
+        try:
+            stamps.append(parse_ts(row["timestamp"]))
+        except (KeyError, ValueError):
+            continue
+    if not stamps:
+        return {"oldest_event": None, "newest_event": None,
+                "observation_span_seconds": None}
+    oldest, newest = min(stamps), max(stamps)
+    return {
+        "oldest_event": oldest.isoformat(),
+        "newest_event": newest.isoformat(),
+        "observation_span_seconds": int((newest - oldest).total_seconds()),
+    }
+
+
 def prioritize_csv(result: dict) -> str:
     """Render session summaries as a byte-stable review handoff CSV.
 
@@ -115,10 +142,14 @@ def checks(result: dict) -> list:
     makes ``parse`` confirmed. ``detail`` is a short fact: a count for a
     confirmed check and why a check was skipped. Grouping adds no verdict: a
     confirmed zero long-dwell sessions is not a claim that no risk exists.
+
+    When an observation window is present (``--coverage``), a fourth
+    ``coverage`` check states the newest event and span the count was taken
+    over, so a zero is never reported without its boundary.
     """
     readable = bool(result.get("source_files"))
     long_dwells = sum(1 for g in result.get("groups", []) if g.get("long_dwell"))
-    return [
+    rows = [
         _check("parse", "confirmed" if readable else "not_confirmed",
                f"{result.get('sessions', 0)} sessions" if readable
                else "input unreadable"),
@@ -126,6 +157,18 @@ def checks(result: dict) -> list:
         _check("provenance", "confirmed" if readable else "skipped",
                result["source_files"][0]["sha256"] if readable else "no readable input"),
     ]
+    if "newest_event" in result:
+        newest = result.get("newest_event")
+        span = result.get("observation_span_seconds")
+        if not readable:
+            rows.append(_check("coverage", "skipped", "no readable input"))
+        elif newest is None:
+            rows.append(_check("coverage", "not_confirmed",
+                               "no parseable event timestamp"))
+        else:
+            rows.append(_check("coverage", "confirmed",
+                               f"newest {newest}; span {span}s"))
+    return rows
 
 
 def checks_csv(rows: list) -> str:
@@ -168,11 +211,15 @@ def main(argv=None) -> int:
                    help="emit only session summaries as review CSV (session,source,event_count,long_dwell)")
     p.add_argument("--checks", action="store_true",
                    help="emit only the per-check confirmation worksheet as CSV (check,status,detail)")
+    p.add_argument("--coverage", action="store_true",
+                   help="report the observed event window and add a coverage check")
     args = p.parse_args(argv)
     data = Path(args.file).read_bytes()
     text = data.decode("utf-8", errors="replace")
     rows = [json.loads(line) for line in text.splitlines() if line.strip()]
     result = sessions(rows, args.gap, args.max_span)
+    if args.coverage:
+        result.update(observation_window(rows))
     result["source_files"] = [source_manifest(args.file, data)]
     result["checks"] = checks(result)
     output = (prioritize_csv(result) if args.prioritize

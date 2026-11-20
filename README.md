@@ -390,6 +390,16 @@ The normalizer and timeline use the `check,status,detail` shape already defined 
 
 `wazuh_bridge.py` reports `tail`, `parse` and `grouping`, mirroring the Wazuh collect/decode/analyze path: a readable alert source makes `tail` and `parse` `confirmed` and `grouping` `confirmed` with its group and queue counts, while an unreadable source makes `tail` and `parse` `not_confirmed`, leaves `grouping` `skipped` and exits `2`. `--input` reads a local UTF-8 JSON-lines file instead of the WSL tail so the worksheet can be produced and tested offline; without it a failed WSL read is also fail-closed. Its JSON report carries the same `checks` array, and the default JSON path still writes the full triage result to `wazuh_queue.json` while the summary goes to stdout.
 
+### Observed window (--coverage)
+
+A read-only investigation console reports a status for each lookup and states plainly that a result is bounded by the objects visible to the current security context; an OU-derived department is labelled inferred, never authoritative. The transferable rule is that a result must carry the boundary of what it actually observed. `timeline.py --coverage` applies it to session grouping: it records the oldest and newest parseable event and the whole-second span between them, and appends a fourth `coverage` row to the confirmation worksheet so a zero long-dwell count is stated beside the window it was counted over.
+
+```
+python timeline.py alerts.jsonl --coverage --checks > checks.csv
+```
+
+The JSON report gains `oldest_event`, `newest_event` and `observation_span_seconds` (all null when no event timestamp could be parsed). The `coverage` row uses the shared closed vocabulary: `confirmed` when a newest event and span were observed, with `detail` as `newest <timestamp>; span <seconds>s`; `not_confirmed` when the input was read but no event timestamp parsed; `skipped` when the input was unreadable, where the existing `parse` and `provenance` checks already fail closed. The flag is opt-in: without `--coverage` the JSON report and the three-check worksheet are byte-identical to the default, so existing consumers are unaffected. A confirmed zero long dwell still means nothing was detected by that check over that window, not that no dwell risk exists.
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push and pull request. It executes the

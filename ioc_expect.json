@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "description": "Ground truth for ioc_fixture.txt. A deliberately known input with its expected observables, so detector coverage can be validated against a fixed answer without inventing a verdict.",
+  "fixture": "ioc_fixture.txt",
+  "fixture_sha256": "eb55e2dc16284e8396cfd24a537a12eade3b43f11b2971256e643d1933793b2b",
+  "count": 3,
+  "findings": [
+    {
+      "type": "domain",
+      "value": "example.com",
+      "lines": [2]
+    },
+    {
+      "type": "ipv4",
+      "value": "8.8.8.8",
+      "lines": [1, 2]
+    },
+    {
+      "type": "sha256",
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "lines": [3]
+    }
+  ]
+}

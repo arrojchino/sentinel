@@ -280,6 +280,25 @@ ATT&CK STIX data ships each collection as a traceable, versioned dataset so a co
 
 The hash is computed from the one byte read used for extraction, so it always describes the bytes that produced the findings; the source is opened read-only and never modified. Provenance adds no maliciousness verdict: suppression of private ranges and deduplication stay evidence transformations, not judgments. An unreadable capture has no provenance entry and is a fail-closed exit `2`. `--prioritize` output is unchanged - the CSV remains observables only, with no provenance rows.
 
+### Ground-truth fixture (--selftest)
+
+A deliberately vulnerable sample application ships with its known scan results so a detector can be checked against a fixed answer: the input is intentionally flawed and the published findings are the expected output, not a discovery about a real target. `iocscan.py` applies the same shape with `--selftest`: it scans the committed `ioc_fixture.txt` and compares the result to `ioc_expect.json`, a ground-truth file recording the observables that input must produce.
+
+```bash
+python iocscan.py --selftest            # exit 0 on a match, 1 on regression, 2 on unreadable input
+python iocscan.py --selftest --out selftest.json
+```
+
+The check emits one JSON document on stdout (no `--out`) with `status` and a `checks` array. `status` is `pass`, `fail` or `error`, and each check carries a `check`, `status` and short `detail`:
+
+- `fixture` - `pass` with the input's byte count, or `error` if it cannot be read.
+- `expectation` - `pass` once the ground-truth file is loaded, or `error` if it is missing or malformed.
+- `fixture_hash` - `pass` when the input's SHA-256 matches the hash pinned in `ioc_expect.json`, `fail` on drift even if the observables still match, or `skipped` if no hash is pinned. The pin makes the answer valid for those exact bytes only.
+- `count` - `pass` when the observed observable count equals the expected count.
+- `observables` - `pass` on an exact match of `(type, value, lines)` sets, otherwise `fail` with the number missing or unexpected.
+
+Exit codes mirror the status: `0` for `pass`, `1` for `fail` (a coverage regression), `2` for `error` (fixture or expectation unreadable, fail-closed and never a pass). This is a regression check on the detector, not a risk verdict about the fixture: the input is known-noise and the answer is a fixed expectation. `--selftest` needs no file argument and takes precedence over the normal scan flags; `--out` writes the same JSON to a file.
+
 ### Timeline review handoff (--prioritize)
 
 A local identity-timeline tool keeps a compact worksheet of records that need review beside its full evidence workbook, and never discards a matching record just because it is out of policy: an unusual dwell is flagged for the analyst, still listed in the ordered activity. `timeline.py --prioritize` applies the same shape with a documented schema and no JSON envelope or prose. stdout carries only the session summaries as CSV:

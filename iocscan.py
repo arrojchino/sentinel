@@ -181,9 +181,108 @@ def _emit(output: str, out: str | None) -> None:
         buffer.write(data)
 
 
+# Selftest statuses are deliberately distinct from CHECK_STATUSES: a
+# ground-truth check answers "does the detector still match its known answer",
+# not "did this input confirm a step".
+SELFTEST_STATUSES = ("pass", "fail", "error", "skipped")
+
+
+def _selftest_check(name: str, status: str, detail: str = "") -> dict:
+    if status not in SELFTEST_STATUSES:
+        raise ValueError(f"unknown selftest status: {status}")
+    return {"check": name, "status": status, "detail": detail}
+
+
+def _observable_set(findings: list) -> set:
+    """Normalize findings to (type, value, tuple(lines)) for exact comparison."""
+    return {(f["type"], f["value"], tuple(f["lines"])) for f in findings}
+
+
+def selftest(base: str | Path | None = None) -> dict:
+    """Validate detector coverage against a committed ground-truth fixture.
+
+    The study target ships a deliberately vulnerable app together with its
+    known scan results, so a scanner can be checked against a fixed answer.
+    This tool ships the same shape: ``ioc_fixture.txt`` is a known input and
+    ``ioc_expect.json`` records the observables it must produce. The check
+    compares the detector's current output to that answer; it reports a
+    coverage regression rather than a risk verdict. ``status`` is pass (all
+    expectations met), fail (a regression) or error (input unreadable, which
+    is fail-closed and never counted as a pass).
+    """
+    base = Path(base) if base is not None else Path(__file__).resolve().parent
+    fixture = base / "ioc_fixture.txt"
+    expect_path = base / "ioc_expect.json"
+    checks: list = []
+    try:
+        data = fixture.read_bytes()
+    except OSError as e:
+        checks.append(_selftest_check("fixture", "error",
+                                      f"unreadable: {type(e).__name__}"))
+        return {"schema_version": 1, "mode": "selftest", "status": "error",
+                "fixture": fixture.name, "checks": checks}
+    checks.append(_selftest_check("fixture", "pass", f"{len(data)} bytes"))
+    try:
+        expectation = json.loads(expect_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        checks.append(_selftest_check("expectation", "error",
+                                      f"unreadable: {type(e).__name__}"))
+        return {"schema_version": 1, "mode": "selftest", "status": "error",
+                "fixture": fixture.name, "checks": checks}
+    checks.append(_selftest_check("expectation", "pass", "ground truth loaded"))
+
+    actual_hash = hashlib.sha256(data).hexdigest()
+    pinned = expectation.get("fixture_sha256")
+    if pinned:
+        matched = pinned == actual_hash
+        checks.append(_selftest_check(
+            "fixture_hash", "pass" if matched else "fail",
+            "bytes match the pinned answer" if matched
+            else f"drift: expected {pinned}, got {actual_hash}"))
+    else:
+        checks.append(_selftest_check("fixture_hash", "skipped", "no pinned hash"))
+
+    result = scan(data.decode("utf-8", errors="replace"))
+    expected_findings = expectation.get("findings", [])
+    exp_count = expectation.get("count")
+    if isinstance(exp_count, int):
+        ok = exp_count == result["count"]
+        checks.append(_selftest_check(
+            "count", "pass" if ok else "fail",
+            f"{result['count']} observed of {exp_count} expected"))
+    missing = sorted(_observable_set(expected_findings) - _observable_set(result["findings"]))
+    unexpected = sorted(_observable_set(result["findings"]) - _observable_set(expected_findings))
+    if not missing and not unexpected:
+        checks.append(_selftest_check("observables", "pass", "exact match"))
+    else:
+        detail = []
+        if missing:
+            detail.append(f"missing {len(missing)}")
+        if unexpected:
+            detail.append(f"unexpected {len(unexpected)}")
+        checks.append(_selftest_check("observables", "fail", ", ".join(detail)))
+
+    if any(c["status"] == "error" for c in checks):
+        status = "error"
+    elif any(c["status"] == "fail" for c in checks):
+        status = "fail"
+    else:
+        status = "pass"
+    return {
+        "schema_version": 1,
+        "mode": "selftest",
+        "status": status,
+        "fixture": fixture.name,
+        "fixture_sha256": actual_hash,
+        "expected_count": exp_count,
+        "observed_count": result["count"],
+        "checks": checks,
+    }
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="IOC normalizer with private-range suppression")
-    p.add_argument("file")
+    p.add_argument("file", nargs="?")
     p.add_argument("--out")
     p.add_argument("--expect", type=int, default=None,
                    help="observables the source claims; a shorter parse is incomplete (exit 2)")
@@ -191,7 +290,15 @@ def main(argv=None) -> int:
                    help="emit only the typed observables as triage CSV (type,value,line)")
     p.add_argument("--checks", action="store_true",
                    help="emit only the per-check confirmation worksheet as CSV (check,status,detail)")
+    p.add_argument("--selftest", action="store_true",
+                   help="validate detection against the committed ground-truth fixture (exit 0/1/2)")
     args = p.parse_args(argv)
+    if args.selftest:
+        st = selftest(Path(__file__).resolve().parent)
+        _emit(json.dumps(st, indent=2) + "\n", args.out)
+        return {"pass": 0, "fail": 1, "error": 2}[st["status"]]
+    if args.file is None:
+        p.error("file is required unless --selftest is given")
     if args.expect is not None and args.expect < 0:
         result = {"schema_version": 1, "count": 0, "findings": [],
                   "expected": args.expect, "status": "incomplete",

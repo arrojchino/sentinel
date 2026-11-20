@@ -6,6 +6,8 @@ Read-only on the Wazuh host. No credentials, no network calls from this script.
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import json
 import subprocess
 import sys
@@ -17,22 +19,65 @@ HERE = Path(__file__).resolve().parent
 DISTRO = "Ubuntu-24.04"
 ALERTS = "/var/ossec/logs/alerts/alerts.json"
 
+# Closed per-check confirmation vocabulary shared by the sentinel tools.
+#   confirmed    - the check ran and produced a result (possibly zero findings)
+#   not_confirmed - its input could not be read or trusted (never clean)
+#   skipped      - it did not apply to this run
+# A confirmed zero means "nothing detected by this check", not "no risk".
+CHECK_STATUSES = ("confirmed", "not_confirmed", "skipped")
 
-def fetch(count: int) -> list[dict]:
-    cmd = ["wsl.exe", "-d", DISTRO, "--", "bash", "-lc",
-           f"sudo -n tail -n {count} {ALERTS}"]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
-    if r.returncode != 0:
-        raise RuntimeError("wsl read failed: " + r.stderr[:200])
-    rows = []
-    for line in r.stdout.replace("\x00", "").splitlines():
-        if not line.strip():
-            continue
+
+def _check(name: str, status: str, detail: str = "") -> dict:
+    """Build one confirmation row with a closed status and a short detail."""
+    if status not in CHECK_STATUSES:
+        raise ValueError(f"unknown check status: {status}")
+    return {"check": name, "status": status, "detail": detail}
+
+
+def fetch(count: int, source: str | None = None) -> dict:
+    """Read raw alert lines from WSL, or from a local file when ``source`` is set.
+
+    Wazuh separates collection from analysis: an agent forwards logs to a
+    manager that then decodes and analyzes them. This step is only the
+    collection half. It reports success and a single-line error instead of
+    raising, so a failed read can be shown as ``not_confirmed`` downstream
+    rather than being mistaken for "no alerts".
+    """
+    if source is None:
+        cmd = ["wsl.exe", "-d", DISTRO, "--", "bash", "-lc",
+               f"sudo -n tail -n {count} {ALERTS}"]
         try:
-            rows.append(json.loads(line))
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {"ok": False, "raw": [], "error": f"wsl read failed: {type(exc).__name__}"}
+        if r.returncode != 0:
+            err = " ".join(r.stderr.split())[:120] or f"wsl exit {r.returncode}"
+            return {"ok": False, "raw": [], "error": err}
+        raw_text = r.stdout.replace("\x00", "")
+    else:
+        try:
+            raw_text = Path(source).read_text(encoding="utf-8")
+        except OSError as exc:
+            return {"ok": False, "raw": [], "error": f"input unreadable: {type(exc).__name__}"}
+    raw = [line for line in raw_text.splitlines() if line.strip()]
+    return {"ok": True, "raw": raw, "error": ""}
+
+
+def parse_lines(raw: list[str]) -> tuple[list[dict], int]:
+    """Decode non-blank lines into alert objects; count malformed lines."""
+    rows: list[dict] = []
+    malformed = 0
+    for line in raw:
+        try:
+            obj = json.loads(line)
         except json.JSONDecodeError:
+            malformed += 1
             continue
-    return rows
+        if not isinstance(obj, dict):
+            malformed += 1
+            continue
+        rows.append(obj)
+    return rows, malformed
 
 
 def triage(rows: list[dict], threshold: int) -> dict:
@@ -64,17 +109,100 @@ def triage(rows: list[dict], threshold: int) -> dict:
             "groups": len(groups), "queue": queue}
 
 
+def checks(result: dict) -> list:
+    """Return a per-check confirmation worksheet for one bridge run, in order.
+
+    The three checks mirror the Wazuh collection pipeline and the shared
+    sentinel vocabulary: ``tail`` is collection, ``parse`` is decoding and
+    ``grouping`` is analysis. A failed read makes ``tail`` and ``parse``
+    ``not_confirmed`` and leaves ``grouping`` ``skipped``, so "no data" can
+    never look like "no alerts". A confirmed zero is only an evidence result,
+    not absolution.
+    """
+    read_ok = bool(result.get("read_ok"))
+    if read_ok:
+        return [
+            _check("tail", "confirmed", f"{result.get('lines_read', 0)} line(s)"),
+            _check("parse", "confirmed",
+                   f"{result.get('alerts_read', 0)} alert(s), "
+                   f"{result.get('malformed', 0)} malformed"),
+            _check("grouping", "confirmed",
+                   f"{result.get('groups', 0)} group(s), "
+                   f"{len(result.get('queue', []))} queued"),
+        ]
+    return [
+        _check("tail", "not_confirmed", result.get("read_error", "read failed")),
+        _check("parse", "not_confirmed", "input not read"),
+        _check("grouping", "skipped", "parse not confirmed"),
+    ]
+
+
+def checks_csv(rows: list) -> str:
+    """Render the confirmation worksheet as a byte-stable CSV.
+
+    Column contract: check,status,detail -- one row per check in the fixed
+    order returned by :func:`checks`. ``status`` is from the closed
+    CHECK_STATUSES vocabulary; ``detail`` is a short fact or reason (a skipped
+    check still states why it did not apply). An LF terminator and trailing
+    newline keep the bytes stable across platforms.
+    """
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(("check", "status", "detail"))
+    for row in rows:
+        writer.writerow((row["check"], row["status"], row.get("detail", "")))
+    return buf.getvalue()
+
+
+def _emit(output: str, out: str | None) -> None:
+    """Write output as exact UTF-8 bytes, with no platform newline translation."""
+    data = output.encode("utf-8")
+    if out:
+        Path(out).write_bytes(data)
+        return
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is None:
+        sys.stdout.write(output)  # captured stdout (e.g. StringIO) has no buffer
+    else:
+        buffer.write(data)
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Wazuh alert bridge for Sentinel")
     p.add_argument("--count", type=int, default=200, help="last N alerts to read")
     p.add_argument("--threshold", type=int, default=7, help="minimum rule level")
-    p.add_argument("--out", default="wazuh_queue.json")
+    p.add_argument("--input", help="read alerts from a local UTF-8 file instead of the WSL tail")
+    p.add_argument("--out",
+                   help="write output to a file instead of stdout (default: wazuh_queue.json for the JSON report)")
+    p.add_argument("--checks", action="store_true",
+                   help="emit only the per-check confirmation worksheet as CSV (check,status,detail)")
     args = p.parse_args(argv)
-    rows = fetch(args.count)
+    out_path = args.out if args.out is not None else "wazuh_queue.json"
+    read = fetch(args.count, args.input)
+    if not read["ok"]:
+        result = {"generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                  "alerts_read": 0, "threshold": args.threshold, "groups": 0, "queue": [],
+                  "read_ok": False, "read_error": read["error"],
+                  "lines_read": 0, "malformed": 0}
+        result["checks"] = checks(result)
+        if args.checks:
+            _emit(checks_csv(result["checks"]), args.out)
+        else:
+            Path(out_path).write_bytes((json.dumps(result, indent=2) + "\n").encode("utf-8"))
+            _emit(json.dumps({"error": read["error"], "out": out_path}, indent=2) + "\n", None)
+        return 2
+    rows, malformed = parse_lines(read["raw"])
     result = triage(rows, args.threshold)
-    Path(args.out).write_text(json.dumps(result, indent=2), encoding="utf-8")
-    print(json.dumps({"alerts_read": result["alerts_read"], "groups": result["groups"],
-                      "queued": len(result["queue"]), "out": args.out}, indent=2))
+    result.update({"read_ok": True, "read_error": "", "lines_read": len(read["raw"]),
+                   "malformed": malformed})
+    result["checks"] = checks(result)
+    if args.checks:
+        _emit(checks_csv(result["checks"]), args.out)
+    else:
+        Path(out_path).write_bytes((json.dumps(result, indent=2) + "\n").encode("utf-8"))
+        summary = {"alerts_read": result["alerts_read"], "groups": result["groups"],
+                   "queued": len(result["queue"]), "out": out_path}
+        _emit(json.dumps(summary, indent=2) + "\n", None)
     return 0
 
 

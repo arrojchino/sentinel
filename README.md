@@ -484,6 +484,15 @@ reported, and stdout is exact UTF-8 bytes with LF endings and a fixed key order,
 so two runs of the same checkout are byte-identical. This is an aggregate
 regression view over committed fixtures, not a risk verdict about any input.
 
+The CI workflow (`.github/workflows/ci.yml`) runs this front-end as a named
+step, `Ground-truth selftests`, immediately after the unit tests. The study
+report's offline fixture suite is checked the same way: a known input and its
+pinned answer are replayed where the code is built, not only by hand. Because
+the front-end rolls the five tools' statuses into one exit code (`0` pass,
+`1` any fail, `2` any error), a fixture regression or an unreadable expectation
+now fails the build alongside the tests. The existing unit-test and gate steps
+are unchanged; adding the step touches no tool's default path.
+
 ## Limits
 
 Each check reports what its rules can see in the supplied file. A clean result is not proof of safety, and a finding is not a verdict. The bridge reads the alerts log file, not the Wazuh API.

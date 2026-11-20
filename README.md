@@ -87,6 +87,19 @@ A `confirmed` zero means "no findings detected by this check", not "no risk" - c
 
 Output is UTF-8 with LF line endings and a trailing newline, so the bytes are stable across platforms and a committed worksheet shows no spurious diff on a rerun. `--out` writes the same CSV to a file instead of stdout, `--list` still takes precedence, and `--prioritize` takes precedence over `--checks` when both are given. Exit status is unchanged (`0`/`1`/`2`) and still gates on findings.
 
+### Ground-truth fixture (--selftest)
+
+A network scanner such as Nmap ships a canonical safe target so a user can confirm the engine works end-to-end before pointing it at anything real. Sentinel applies the same "known-good invocation" shape to its reporting engine with `--selftest`: it runs the production severity, `must_fix` and ordering functions over a committed set of captured tool results and compares them to a fixed answer, so a silent regression in the ranking is caught once and guards the JSON envelope, `--prioritize` CSV and `--checks` worksheet together.
+
+```bash
+python sentinel.py --selftest            # exit 0 on a match, 1 on regression, 2 on unreadable input
+python sentinel.py --selftest --out selftest.json
+```
+
+`sentinel_fixture.json` is a captured set of six tool results that spans every severity bucket: an errored tool (`indeterminate`), a hash mismatch (`critical`), a disallowed value plus missing fields (`high`), an invalid/unresolved state (`medium`), an informational hash (`info`) and a clean tool (`clear`). `sentinel_expect.json` pins the fixture's SHA-256 (so a byte change is a failure even when the decision is unchanged) and records the exact severity contract, `must_fix` flags and prioritized order that input must produce. The JSON report carries `mode` (`selftest`), `status`, `fixture`, `fixture_sha256`, `tool_results` and a `checks` array. Checks use a closed `pass`/`fail`/`error`/`skipped` vocabulary, deliberately separate from the `confirmed`/`not_confirmed`/`skipped` confirmation worksheet: `fixture` and `expectation` verify the committed files were read, `fixture_hash` compares the bytes to the pinned SHA-256, `parse` records the result count, and `severity_map`, `prioritized`, `must_fix` and `prioritize_csv` compare the reporting engine's output exactly. The pinned hash is a consistency check, not an authenticity or risk claim.
+
+Exit codes mirror the status: `0` for `pass`, `1` for `fail` (a regression in any compared field), `2` for `error` (fixture or expectation unreadable, or an invalid fixture, fail-closed and never a pass). This is a regression check on the reporting engine, not a risk verdict about the fixture: the input is known-noise and the answer is a fixed expectation. `--selftest` needs no file argument, takes precedence over the normal flags, and `--out` writes the same JSON to a file. Without it the default path is byte-identical to before.
+
 ## CI gate contract
 
 Wireshark ships TShark as the line-oriented front-end that reuses the same dissection and filtering code as the GUI, so a scripted run sees exactly what an interactive run sees. Sentinel follows the same shape with one rule engine and one scriptable front-end: stdout carries the evidence envelope, and the exit status carries the decision the pipeline composes on. There is no separate "CI mode" that could drift from what a human runs.

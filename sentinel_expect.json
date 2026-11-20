@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "description": "Ground truth for sentinel_fixture.json. A captured set of tool results spanning every severity bucket (indeterminate, critical, high, medium, info, clear) with the exact severity contract, must_fix flags, prioritized order and triage CSV the reporting engine must produce. This guards the reporting engine against regression; it is not a risk verdict about any input.",
+  "fixture": "sentinel_fixture.json",
+  "fixture_sha256": "dc27626fc6b03bfec9c229f1196d16140217bf5ec205c291099d2536088cfb61",
+  "expected": {
+    "severity": {
+      "buckets": [
+        "indeterminate",
+        "critical",
+        "high",
+        "medium",
+        "low",
+        "info",
+        "clear"
+      ],
+      "kind_map": {
+        "hash_mismatch": "critical",
+        "tool_not_allowed": "critical",
+        "missing_evidence": "high",
+        "expired_authorization": "high",
+        "missing_authorization": "high",
+        "forbidden_value": "high",
+        "disallowed": "high",
+        "invalid_state": "medium",
+        "unresolved_state": "medium",
+        "missing_column": "medium",
+        "header_mismatch": "medium",
+        "size_mismatch": "low",
+        "missing_field": "low",
+        "missing_header": "low",
+        "pattern": "info",
+        "sha256": "info",
+        "header": "info"
+      },
+      "default": "info",
+      "must_fix": [
+        "critical",
+        "high",
+        "indeterminate",
+        "low",
+        "medium"
+      ]
+    },
+    "prioritized": [
+      {
+        "tool": "toolallow",
+        "severity": "indeterminate",
+        "count": 0,
+        "must_fix": true
+      },
+      {
+        "tool": "chaincustody",
+        "severity": "critical",
+        "count": 1,
+        "must_fix": true
+      },
+      {
+        "tool": "authzmatrix",
+        "severity": "high",
+        "count": 3,
+        "must_fix": true
+      },
+      {
+        "tool": "evidencestate",
+        "severity": "medium",
+        "count": 2,
+        "must_fix": true
+      },
+      {
+        "tool": "emlhash",
+        "severity": "info",
+        "count": 1,
+        "must_fix": false
+      },
+      {
+        "tool": "headerscheck",
+        "severity": "clear",
+        "count": 0,
+        "must_fix": false
+      }
+    ],
+    "must_fix": {
+      "toolallow": true,
+      "chaincustody": true,
+      "authzmatrix": true,
+      "evidencestate": true,
+      "emlhash": false,
+      "headerscheck": false
+    },
+    "prioritize_csv": "tool,severity,count,must_fix\ntoolallow,indeterminate,0,true\nchaincustody,critical,1,true\nauthzmatrix,high,3,true\nevidencestate,medium,2,true\nemlhash,info,1,false\nheaderscheck,clear,0,false\n"
+  }
+}

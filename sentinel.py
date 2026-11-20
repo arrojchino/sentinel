@@ -67,6 +67,20 @@ RANK = {name: i for i, name in enumerate(BUCKETS)}  # lower index = higher prior
 MUST_FIX = frozenset(("indeterminate", "critical", "high", "medium", "low"))
 
 
+def severity_contract() -> dict:
+    """The documented severity contract shared by the report and the selftest.
+
+    One definition feeds both the JSON envelope and the ground-truth check, so
+    a reported map can never drift from the one the selftest pins.
+    """
+    return {
+        "buckets": list(BUCKETS),
+        "kind_map": SEVERITY,
+        "default": DEFAULT_SEVERITY,
+        "must_fix": sorted(MUST_FIX),
+    }
+
+
 def severity_of(kind: str) -> str:
     return SEVERITY.get(kind, DEFAULT_SEVERITY)
 
@@ -340,15 +354,144 @@ def run(path: Path, team: str | None, tool: str | None) -> dict:
         "results": [r for _, r in ranked],
         "prioritized": prioritized(results),
         "checks": checks(tools(), results),
-        "severity": {
-            "buckets": list(BUCKETS),
-            "kind_map": SEVERITY,
-            "default": DEFAULT_SEVERITY,
-            "must_fix": sorted(MUST_FIX),
-        },
+        "severity": severity_contract(),
         "source_files": [source_manifest(path, data)],
     }
     return result
+
+
+# Selftest statuses are deliberately distinct from CHECK_STATUSES: a
+# ground-truth check answers "does the severity/order engine still match its
+# known answer", not "did this check confirm a step on this input". The same
+# severity contract and ranking feed the JSON envelope, --prioritize CSV and
+# --checks worksheet, so one captured answer guards every front-end at once.
+SELFTEST_STATUSES = ("pass", "fail", "error", "skipped")
+
+
+def _selftest_check(name: str, status: str, detail: str = "") -> dict:
+    if status not in SELFTEST_STATUSES:
+        raise ValueError(f"unknown selftest status: {status}")
+    return {"check": name, "status": status, "detail": detail}
+
+
+def selftest(base: str | Path | None = None) -> dict:
+    """Validate severity, must_fix and prioritized order against ground truth.
+
+    Like a network scanner that ships a canonical safe target so a user can
+    confirm the engine works end-to-end, this ships a captured set of tool
+    results (``sentinel_fixture.json``) spanning every severity bucket and its
+    exact expected answer (``sentinel_expect.json``). The production
+    :func:`severity_contract`, :func:`prioritized` and :func:`prioritize_csv`
+    functions run on that fixture and are compared exactly. This reports a
+    regression in the reporting engine, not a risk verdict about any input.
+    ``status`` is pass (all expectations met), fail (a regression) or error
+    (fixture unreadable or unparsable, which is fail-closed and never a pass).
+    """
+    base = Path(base) if base is not None else HERE
+    fixture = base / "sentinel_fixture.json"
+    expect_path = base / "sentinel_expect.json"
+    checks: list = []
+    try:
+        data = fixture.read_bytes()
+    except OSError as e:
+        checks.append(_selftest_check("fixture", "error",
+                                      f"unreadable: {type(e).__name__}"))
+        return {"schema_version": SCHEMA, "mode": "selftest", "status": "error",
+                "fixture": fixture.name, "checks": checks}
+    checks.append(_selftest_check("fixture", "pass", f"{len(data)} bytes"))
+    try:
+        expectation = json.loads(expect_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        checks.append(_selftest_check("expectation", "error",
+                                      f"unreadable: {type(e).__name__}"))
+        return {"schema_version": SCHEMA, "mode": "selftest", "status": "error",
+                "fixture": fixture.name, "checks": checks}
+    checks.append(_selftest_check("expectation", "pass", "ground truth loaded"))
+
+    actual_hash = hashlib.sha256(data).hexdigest()
+    pinned = expectation.get("fixture_sha256")
+    if pinned:
+        matched = pinned == actual_hash
+        checks.append(_selftest_check(
+            "fixture_hash", "pass" if matched else "fail",
+            "bytes match the pinned answer" if matched
+            else f"drift: expected {pinned}, got {actual_hash}"))
+    else:
+        checks.append(_selftest_check("fixture_hash", "skipped", "no pinned hash"))
+
+    try:
+        results = json.loads(data.decode("utf-8"))
+        if not isinstance(results, list):
+            raise ValueError("fixture is not a results list")
+    except (ValueError, UnicodeDecodeError) as e:
+        checks.append(_selftest_check("parse", "error",
+                                      f"invalid fixture: {type(e).__name__}"))
+        return {"schema_version": SCHEMA, "mode": "selftest", "status": "error",
+                "fixture": fixture.name, "fixture_sha256": actual_hash,
+                "checks": checks}
+    checks.append(_selftest_check("parse", "pass",
+                                  f"{len(results)} tool result(s)"))
+
+    expected = expectation.get("expected", {})
+    actual_prioritized = prioritized(results)
+
+    exp_severity = expected.get("severity")
+    if isinstance(exp_severity, dict):
+        ok = exp_severity == severity_contract()
+        checks.append(_selftest_check(
+            "severity_map", "pass" if ok else "fail",
+            "exact match" if ok else "severity contract drift"))
+    else:
+        checks.append(_selftest_check("severity_map", "skipped",
+                                      "no expected severity contract"))
+
+    exp_prioritized = expected.get("prioritized")
+    if isinstance(exp_prioritized, list):
+        ok = exp_prioritized == actual_prioritized
+        checks.append(_selftest_check(
+            "prioritized", "pass" if ok else "fail",
+            f"{len(actual_prioritized)} tool(s) in exact order" if ok
+            else "prioritized order/counts drift"))
+    else:
+        checks.append(_selftest_check("prioritized", "skipped",
+                                      "no expected prioritized list"))
+
+    actual_flags = {row["tool"]: row["must_fix"] for row in actual_prioritized}
+    exp_flags = expected.get("must_fix")
+    if isinstance(exp_flags, dict):
+        ok = exp_flags == actual_flags
+        checks.append(_selftest_check(
+            "must_fix", "pass" if ok else "fail",
+            "exact match" if ok else "must_fix flag drift"))
+    else:
+        checks.append(_selftest_check("must_fix", "skipped",
+                                      "no expected must_fix flags"))
+
+    exp_csv = expected.get("prioritize_csv")
+    if isinstance(exp_csv, str):
+        ok = exp_csv == prioritize_csv(actual_prioritized)
+        checks.append(_selftest_check(
+            "prioritize_csv", "pass" if ok else "fail",
+            "byte-exact CSV" if ok else "triage CSV drift"))
+    else:
+        checks.append(_selftest_check("prioritize_csv", "skipped",
+                                      "no expected CSV"))
+
+    if any(c["status"] == "error" for c in checks):
+        status = "error"
+    elif any(c["status"] == "fail" for c in checks):
+        status = "fail"
+    else:
+        status = "pass"
+    return {
+        "schema_version": SCHEMA,
+        "mode": "selftest",
+        "status": status,
+        "fixture": fixture.name,
+        "fixture_sha256": actual_hash,
+        "tool_results": len(results),
+        "checks": checks,
+    }
 
 
 def main(argv=None) -> int:
@@ -362,8 +505,14 @@ def main(argv=None) -> int:
                    help="emit only the prioritized 'where to start' list as triage CSV")
     p.add_argument("--checks", action="store_true",
                    help="emit only the per-check confirmation worksheet as CSV (tool,status,findings)")
+    p.add_argument("--selftest", action="store_true",
+                   help="validate severity, must_fix and prioritized order against the committed ground-truth fixture (exit 0/1/2)")
     args = p.parse_args(argv)
     supplied = list(sys.argv[1:] if argv is None else argv)
+    if args.selftest:
+        st = selftest(HERE)
+        _emit(json.dumps(st, indent=2) + "\n", args.out)
+        return {"pass": 0, "fail": 1, "error": 2}[st["status"]]
     if args.list:
         names = [n for n in sorted(TEAMS) if not args.team or args.team in TEAMS[n]]
         print("\n".join(names))

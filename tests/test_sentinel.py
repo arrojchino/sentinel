@@ -2,6 +2,7 @@ import csv
 import hashlib
 import io
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -345,6 +346,77 @@ class QuickstartTests(unittest.TestCase):
             doc = json.loads(r.stdout)
             self.assertIn("results", doc)
             self.assertIn("prioritized", doc)
+
+
+class SentinelSelftestTests(unittest.TestCase):
+    """Ground-truth check for the severity/order reporting engine."""
+
+    def _copy_base(self, d):
+        base = Path(d)
+        shutil.copy(s.HERE / "sentinel.py", base / "sentinel.py")
+        shutil.copy(s.HERE / "teams.json", base / "teams.json")
+        shutil.copy(s.HERE / "sentinel_expect.json", base / "sentinel_expect.json")
+        return base
+
+    def test_committed_fixture_passes(self):
+        st = s.selftest(s.HERE)
+        self.assertEqual(st["status"], "pass")
+        self.assertEqual(st["mode"], "selftest")
+        self.assertTrue(all(c["status"] == "pass" for c in st["checks"]))
+        self.assertEqual(len(st["checks"]), 8)
+        self.assertEqual(st["tool_results"], 6)
+
+    def test_fixture_hash_matches_hashlib(self):
+        data = (s.HERE / "sentinel_fixture.json").read_bytes()
+        st = s.selftest(s.HERE)
+        self.assertEqual(st["fixture_sha256"], hashlib.sha256(data).hexdigest())
+
+    def test_cli_selftest_is_byte_stable_and_empty_stderr(self):
+        r = subprocess.run([sys.executable, str(Path(s.__file__).resolve()), "--selftest"],
+                           capture_output=True)
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(r.stderr, b"")
+        self.assertNotIn(b"\r", r.stdout)
+        doc = json.loads(r.stdout)
+        self.assertEqual(doc["status"], "pass")
+
+    def test_regression_fails_closed_with_exit_one(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = self._copy_base(d)
+            fix = json.loads((s.HERE / "sentinel_fixture.json").read_text(encoding="utf-8"))
+            fix[1]["findings"][0]["kind"] = "sha256"
+            (base / "sentinel_fixture.json").write_text(json.dumps(fix), encoding="utf-8")
+            r = subprocess.run([sys.executable, str(base / "sentinel.py"), "--selftest"],
+                               capture_output=True)
+            self.assertEqual(r.returncode, 1)
+            st = json.loads(r.stdout)
+            self.assertEqual(st["status"], "fail")
+            failed = {c["check"] for c in st["checks"] if c["status"] == "fail"}
+            self.assertIn("prioritized", failed)
+            self.assertIn("must_fix", failed)
+
+    def test_missing_fixture_errors_with_exit_two(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = self._copy_base(d)
+            st = s.selftest(base)
+            self.assertEqual(st["status"], "error")
+            self.assertEqual(st["checks"][0]["status"], "error")
+            r = subprocess.run([sys.executable, str(base / "sentinel.py"), "--selftest"],
+                               capture_output=True)
+            self.assertEqual(r.returncode, 2)
+
+    def test_unparsable_fixture_errors_with_exit_two(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = self._copy_base(d)
+            (base / "sentinel_fixture.json").write_text("not json", encoding="utf-8")
+            st = s.selftest(base)
+            self.assertEqual(st["status"], "error")
+            self.assertEqual(st["checks"][-1]["check"], "parse")
+            self.assertEqual(st["checks"][-1]["status"], "error")
+
+    def test_unknown_status_is_rejected(self):
+        with self.assertRaises(ValueError):
+            s._selftest_check("x", "bogus")
 
 
 if __name__ == "__main__":

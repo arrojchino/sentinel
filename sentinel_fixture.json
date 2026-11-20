@@ -1,0 +1,8 @@
+[
+  {"tool": "toolallow", "error": "ValueError: rules unavailable"},
+  {"tool": "chaincustody", "count": 1, "findings": [{"kind": "hash_mismatch", "value": "artifact.bin"}]},
+  {"tool": "authzmatrix", "count": 3, "findings": [{"kind": "disallowed", "value": "maybe"}, {"kind": "missing_field", "value": "role"}, {"kind": "missing_field", "value": "resource"}]},
+  {"tool": "evidencestate", "count": 2, "findings": [{"kind": "invalid_state", "value": "investigating"}, {"kind": "unresolved_state", "value": "investigating"}]},
+  {"tool": "emlhash", "count": 1, "findings": [{"kind": "sha256", "value": "abc123"}]},
+  {"tool": "headerscheck", "count": 0, "findings": []}
+]

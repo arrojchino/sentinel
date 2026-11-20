@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import io
 import ipaddress
 import json
@@ -61,6 +62,28 @@ def scan(text: str, expected: int | None = None) -> dict:
     return result
 
 
+def source_manifest(path: str | Path, data: bytes | None = None) -> dict:
+    """Record provenance for the exact bytes the observables were read from.
+
+    Mirrors timeline.py's source-files worksheet so both tools in this repo
+    share one provenance shape: name, byte size, non-blank line count and
+    SHA-256 let a reviewer tie findings back to the input they came from.
+    The source is read only; nothing is rewritten or decorated with a verdict.
+    When ``data`` is supplied the caller's single read is reused, so the hash
+    always covers the same bytes that were scanned.
+    """
+    p = Path(path)
+    if data is None:
+        data = p.read_bytes()
+    text = data.decode("utf-8", errors="replace")
+    return {
+        "name": p.name,
+        "bytes": len(data),
+        "lines": sum(1 for line in text.splitlines() if line.strip()),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
+
+
 def prioritize_csv(findings: list) -> str:
     """Render typed observables as a triage CSV.
 
@@ -108,13 +131,15 @@ def main(argv=None) -> int:
                   "reason": "--expect must be a non-negative integer"}
     else:
         try:
-            text = Path(args.file).read_text(encoding="utf-8", errors="replace")
+            data = Path(args.file).read_bytes()
         except OSError as e:
             result = {"schema_version": 1, "count": 0, "findings": [],
                       "status": "incomplete",
                       "reason": f"input error: {type(e).__name__}: {str(e)[:160]}"}
         else:
+            text = data.decode("utf-8", errors="replace")
             result = scan(text, expected=args.expect)
+            result["source_files"] = [source_manifest(args.file, data)]
     output = (prioritize_csv(result["findings"]) if args.prioritize
               else json.dumps(result, indent=2) + "\n")
     _emit(output, args.out)

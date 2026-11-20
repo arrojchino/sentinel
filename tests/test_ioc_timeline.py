@@ -127,6 +127,64 @@ class IocPrioritizeCsvTests(unittest.TestCase):
                              ioc.prioritize_csv(ioc.scan(text)["findings"]).encode("utf-8"))
 
 
+class IocSourceManifestTests(unittest.TestCase):
+    FIXTURE = "8.8.8.8 example.com\n8.8.8.8\n\n"
+
+    def test_manifest_fields_and_hash(self):
+        data = self.FIXTURE.encode("utf-8")
+        m = ioc.source_manifest("capture.txt", data)
+        self.assertEqual(m["name"], "capture.txt")
+        self.assertEqual(m["bytes"], len(data))
+        self.assertEqual(m["lines"], 2)
+        self.assertEqual(m["sha256"], hashlib.sha256(data).hexdigest())
+
+    def test_blank_lines_excluded_and_single_read_reused(self):
+        data = b'8.8.8.8\n\n   \n'
+        m = ioc.source_manifest("capture.txt", data)
+        self.assertEqual(m["lines"], 1)
+        self.assertEqual(m["bytes"], len(data))
+
+    def test_cli_emits_manifest_matching_actual_file_bytes(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "capture.txt"
+            src.write_bytes(self.FIXTURE.encode("utf-8"))
+            before = src.read_bytes()
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = ioc.main([str(src)])
+            out = buf.getvalue()
+            doc = json.loads(out)
+            self.assertEqual(code, 1)
+            self.assertEqual(out.count("\r"), 0)
+            entry = doc["source_files"][0]
+            self.assertEqual(entry["name"], "capture.txt")
+            self.assertEqual(entry["bytes"], len(before))
+            self.assertEqual(entry["lines"], 2)
+            self.assertEqual(entry["sha256"], hashlib.sha256(before).hexdigest())
+            self.assertEqual(src.read_bytes(), before)  # source is never modified
+
+    def test_prioritize_output_unchanged_by_manifest(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "capture.txt"
+            src.write_bytes(self.FIXTURE.encode("utf-8"))
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = ioc.main([str(src), "--prioritize"])
+            self.assertEqual(code, 1)
+            rows = list(csv.reader(io.StringIO(buf.getvalue())))
+            self.assertEqual(rows[0], ["type", "value", "line"])
+            self.assertFalse(any("sha256" in r for r in rows))  # no provenance rows
+
+    def test_input_error_has_no_manifest(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = ioc.main(["does-not-exist.txt"])
+        doc = json.loads(buf.getvalue())
+        self.assertEqual(code, 2)
+        self.assertEqual(doc["status"], "incomplete")
+        self.assertNotIn("source_files", doc)
+
+
 class TimelineTests(unittest.TestCase):
     def test_gap_splits_sessions(self):
         rows = [

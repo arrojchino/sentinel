@@ -207,6 +207,17 @@ Columns, in order:
 
 One row is emitted per (type, value, line) occurrence, so an observable seen on several lines keeps every location even after deduplication. Rows follow the deterministic (type, value, then line) order used by the JSON findings. Output is UTF-8 with LF endings and a trailing newline, so a committed triage CSV changes only when the observables change and never produces a platform-newline diff. `--out` writes the same bytes to a file instead of stdout. The exit status (`0`/`1`/`2`) is unchanged: `1` with findings, `0` without, and `2` for an incomplete parse or an input error, so a caller can still gate on evidence quality while handing the CSV to a reviewer.
 
+### IOC source provenance
+
+ATT&CK STIX data ships each collection as a traceable, versioned dataset so a consumer can tie a copy back to an exact release. `iocscan.py` applies the traceability half in its JSON report: the `source_files` array holds one entry for the capture that produced the observables, using the same shape as `timeline.py` so both tools share one provenance contract:
+
+- `name` - the capture file's basename.
+- `bytes` - the capture size in bytes.
+- `lines` - the number of non-blank lines parsed from the capture.
+- `sha256` - the SHA-256 of the exact bytes read, covering the same single read that was scanned.
+
+The hash is computed from the one byte read used for extraction, so it always describes the bytes that produced the findings; the source is opened read-only and never modified. Provenance adds no maliciousness verdict: suppression of private ranges and deduplication stay evidence transformations, not judgments. An unreadable capture has no provenance entry and is a fail-closed exit `2`. `--prioritize` output is unchanged - the CSV remains observables only, with no provenance rows.
+
 ### Timeline review handoff (--prioritize)
 
 A local identity-timeline tool keeps a compact worksheet of records that need review beside its full evidence workbook, and never discards a matching record just because it is out of policy: an unusual dwell is flagged for the analyst, still listed in the ordered activity. `timeline.py --prioritize` applies the same shape with a documented schema and no JSON envelope or prose. stdout carries only the session summaries as CSV:

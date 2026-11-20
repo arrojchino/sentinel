@@ -87,6 +87,25 @@ A `confirmed` zero means "no findings detected by this check", not "no risk" - c
 
 Output is UTF-8 with LF line endings and a trailing newline, so the bytes are stable across platforms and a committed worksheet shows no spurious diff on a rerun. `--out` writes the same CSV to a file instead of stdout, `--list` still takes precedence, and `--prioritize` takes precedence over `--checks` when both are given. Exit status is unchanged (`0`/`1`/`2`) and still gates on findings.
 
+### Completeness worksheet (--completeness)
+
+A scan-reporting helper marks any scan whose parser saw fewer rows than the upstream summary claims as *pending, never clean*, so an upstream format change can never render a falsely clean report. Sentinel applies that completeness contract with `--completeness`: it cross-checks each tool's claimed finding count against what the scanner actually parsed and emits a compact worksheet. The claim is the source's own account of its findings, not a verdict.
+
+```bash
+python sentinel.py --tool outputschema report.json --completeness --claims claims.json > completeness.csv
+```
+
+`claims.json` is a flat JSON object mapping a tool name to a non-negative integer count, for example `{"outputschema": 0}`. An unreadable file, a non-object shape, or a negative/non-integer claim is a usage error (exit `2`), never an empty claim set that could make every tool look verified. A missing `--claims` file is also a usage error.
+
+Column contract - the header is always the first line:
+
+- `tool` - a tool named in the claims file, in name order.
+- `status` - one of a closed vocabulary: `verified` (an exact claim/parsed match on a successful run), `pending` (the source claims more findings than were parsed), `extra` (more were parsed than claimed), `not_confirmed` (the tool errored), or `not_run` (named in the claims but not selected by `--tool`/`--team`).
+- `claimed` - the integer from the claims file.
+- `parsed` - the integer count from a successful run, empty for `not_confirmed` and `not_run`.
+
+Only `verified` counts as clean. A `pending` row means the source says there should be more findings than could be parsed - even a parsed zero is not clean in that case, which is the whole point of the check. `extra` and `not_confirmed` are not clean either. Exit status fails closed: it is `1` if any row is not `verified` or any tool reported findings or errored, and `0` only when every claim is verified and the run is otherwise clean. Exit `2` reserves usage errors such as a missing `--claims` file. Output is UTF-8 with LF endings and a trailing newline, so a committed worksheet shows no spurious diff on a rerun. `--list` and `--selftest` still take precedence. With no `--completeness` flag the JSON envelope and its `0`/`1`/`2` contract are byte-identical to before; the worksheet is opt-in and adds no fields to the default envelope.
+
 ### Ground-truth fixture (--selftest)
 
 A network scanner such as Nmap ships a canonical safe target so a user can confirm the engine works end-to-end before pointing it at anything real. Sentinel applies the same "known-good invocation" shape to its reporting engine with `--selftest`: it runs the production severity, `must_fix` and ordering functions over a committed set of captured tool results and compares them to a fixed answer, so a silent regression in the ranking is caught once and guards the JSON envelope, `--prioritize` CSV and `--checks` worksheet together.

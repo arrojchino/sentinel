@@ -482,5 +482,101 @@ class KindCoverageTests(unittest.TestCase):
             self.assertEqual(cov_by["kind_coverage"]["status"], "fail")
 
 
+class CompletenessWorksheetTests(unittest.TestCase):
+    def test_closed_vocabulary_and_pending_never_clean(self):
+        results = [
+            {"tool": "verified", "count": 3},
+            {"tool": "pending", "count": 0},
+            {"tool": "extra", "count": 5},
+            {"tool": "not_confirmed", "error": "boom"},
+        ]
+        claims = {"verified": 3, "pending": 2, "extra": 2,
+                  "not_confirmed": 0, "not_run": 0}
+        rows = s.completeness(claims, results)
+        self.assertEqual([r["tool"] for r in rows], sorted(claims))
+        by = {r["tool"]: r for r in rows}
+        self.assertEqual({t: by[t]["status"] for t in sorted(claims)}, {
+            "verified": "verified", "pending": "pending", "extra": "extra",
+            "not_confirmed": "not_confirmed", "not_run": "not_run"})
+        self.assertTrue(all(r["status"] in s.COMPLETENESS_STATUSES for r in rows))
+        self.assertEqual(by["pending"]["parsed"], 0)
+        self.assertEqual(by["pending"]["claimed"], 2)
+        self.assertIsNone(by["not_run"]["parsed"])
+        self.assertIsNone(by["not_confirmed"]["parsed"])
+
+    def test_csv_contract_and_byte_stability(self):
+        rows = [
+            {"tool": "a", "status": "verified", "claimed": 1, "parsed": 1},
+            {"tool": "b", "status": "not_run", "claimed": 0, "parsed": None},
+        ]
+        text = s.completeness_csv(rows)
+        self.assertEqual(text, "tool,status,claimed,parsed\na,verified,1,1\nb,not_run,0,\n")
+        self.assertNotIn("\r", text)
+        self.assertEqual(text, s.completeness_csv(rows))
+
+    def test_load_claims_valid_and_invalid(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "claims.json"
+            path.write_text('{"outputschema": 2}', encoding="utf-8")
+            claims, err = s.load_claims(path)
+            self.assertIsNone(err)
+            self.assertEqual(claims, {"outputschema": 2})
+            for body in ('[]', '{"x": -1}', '{"x": "2"}', '{"x": true}', '{bad'):
+                path.write_text(body, encoding="utf-8")
+                claims, err = s.load_claims(path)
+                self.assertIsNone(claims)
+                self.assertTrue(err)
+            claims, err = s.load_claims(Path(d) / "missing.json")
+            self.assertIsNone(claims)
+            self.assertIn("unreadable", err)
+
+    def _probe(self, directory, claim_text, input_text='{"schema_version":1,"report_id":"abc","generated_at":"now","findings":[]}'):
+        good = Path(directory) / "good.json"
+        good.write_text(input_text, encoding="utf-8")
+        claims = Path(directory) / "claims.json"
+        claims.write_text(claim_text, encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, str(Path(s.__file__).resolve()), "--tool", "outputschema",
+             str(good), "--completeness", "--claims", str(claims)],
+            capture_output=True)
+
+    def test_cli_probe_verified_exits_clean(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = self._probe(d, '{"outputschema": 0}')
+            self.assertEqual(r.returncode, 0)
+            self.assertEqual(r.stderr, b"")
+            self.assertNotIn(b"\r", r.stdout)
+            self.assertEqual(r.stdout.decode("utf-8"),
+                             "tool,status,claimed,parsed\noutputschema,verified,0,0\n")
+
+    def test_cli_probe_pending_exits_one_with_zero_findings(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = self._probe(d, '{"outputschema": 2}')
+            self.assertEqual(r.returncode, 1)  # pending is never clean at parsed zero
+            self.assertIn("outputschema,pending,2,0", r.stdout.decode("utf-8"))
+
+    def test_cli_probe_bad_claim_and_missing_file_exit_two(self):
+        with tempfile.TemporaryDirectory() as d:
+            good = Path(d) / "good.json"
+            good.write_text("{}", encoding="utf-8")
+            claims = Path(d) / "claims.json"
+            claims.write_text('{"outputschema": -1}', encoding="utf-8")
+            base = [sys.executable, str(Path(s.__file__).resolve()),
+                    "--tool", "outputschema", str(good), "--completeness"]
+            self.assertEqual(subprocess.run(base + ["--claims", str(claims)],
+                                            capture_output=True).returncode, 2)
+            self.assertEqual(subprocess.run(base, capture_output=True).returncode, 2)
+
+    def test_default_envelope_has_no_completeness_field(self):
+        with tempfile.TemporaryDirectory() as d:
+            good = Path(d) / "good.json"
+            good.write_text('{"schema_version":1,"report_id":"abc","generated_at":"now","findings":[]}', encoding="utf-8")
+            r = subprocess.run([sys.executable, str(Path(s.__file__).resolve()),
+                                "--tool", "outputschema", str(good)], capture_output=True)
+            self.assertEqual(r.returncode, 0)
+            self.assertNotIn("completeness", json.loads(r.stdout))
+            self.assertNotIn("claimed", r.stdout.decode("utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()

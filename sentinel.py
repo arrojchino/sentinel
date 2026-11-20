@@ -250,6 +250,88 @@ def checks_csv(rows: list) -> str:
     return buf.getvalue()
 
 
+# A scan-reporting helper marks any scan whose parser saw fewer rows than the
+# upstream summary claims as "pending, never clean", so an upstream format
+# change can never render a falsely clean report. Sentinel applies that
+# completeness contract by cross-checking each tool's claimed count (the
+# source's own account, not a verdict) against what the scanner parsed. Closed
+# vocabulary, deliberately separate from the confirmation worksheet and the
+# selftest statuses.
+COMPLETENESS_STATUSES = ("verified", "pending", "extra", "not_confirmed", "not_run")
+
+
+def load_claims(path: str | Path) -> tuple:
+    """Return ``(claims, error)`` from a JSON tool-name -> count file.
+
+    The claim is the upstream summary's own account of how many findings it
+    produced, not a verdict. Only non-negative integers are accepted; an
+    unreadable or malformed file is an error, never an empty claim set that
+    could make every tool look verified.
+    """
+    try:
+        obj = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return None, f"unreadable claims ({type(e).__name__})"
+    if not isinstance(obj, dict):
+        return None, "claims must be a JSON object"
+    claims = {}
+    for name, value in obj.items():
+        if not isinstance(name, str) or not name:
+            return None, "claim key must be a non-empty tool name"
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return None, f"claim for {name!r} must be a non-negative integer"
+        claims[name] = value
+    return claims, None
+
+
+def completeness(claims: dict, results: list) -> list:
+    """Cross-check claimed counts against parsed result counts.
+
+    One row per claimed tool, in tool-name order. ``verified`` is an exact
+    match on a successful run. ``pending`` means the source claims more than
+    was parsed (not clean even at a parsed zero); ``extra`` means more was
+    parsed than claimed (also not clean); an errored tool is ``not_confirmed``
+    and a named but unrun tool is ``not_run``. Only ``verified`` is clean.
+    """
+    by_name = {r["tool"]: r for r in results}
+    rows = []
+    for name in sorted(claims):
+        claim = claims[name]
+        result = by_name.get(name)
+        if result is None:
+            status, parsed = "not_run", None
+        elif result.get("error"):
+            status, parsed = "not_confirmed", None
+        else:
+            parsed = result.get("count", 0)
+            if parsed == claim:
+                status = "verified"
+            elif parsed < claim:
+                status = "pending"
+            else:
+                status = "extra"
+        rows.append({"tool": name, "status": status,
+                     "claimed": claim, "parsed": parsed})
+    return rows
+
+
+def completeness_csv(rows: list) -> str:
+    """Render the completeness worksheet as a byte-stable CSV.
+
+    Column contract: tool,status,claimed,parsed -- one row per claimed tool,
+    in tool-name order. ``status`` is from COMPLETENESS_STATUSES; ``parsed``
+    is empty when the tool produced no trustworthy count. LF newlines and a
+    trailing newline keep bytes deterministic across platforms.
+    """
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(("tool", "status", "claimed", "parsed"))
+    for row in rows:
+        writer.writerow((row["tool"], row["status"], row["claimed"],
+                         "" if row["parsed"] is None else row["parsed"]))
+    return buf.getvalue()
+
+
 def source_manifest(path: str | Path, data: bytes | None = None) -> dict:
     """Record provenance for the exact bytes the checks were built from.
 
@@ -590,6 +672,9 @@ def main(argv=None) -> int:
                    help="emit only the per-check confirmation worksheet as CSV (tool,status,findings)")
     p.add_argument("--selftest", action="store_true",
                    help="validate severity, must_fix and prioritized order against the committed ground-truth fixture (exit 0/1/2)")
+    p.add_argument("--completeness", action="store_true",
+                   help="emit a claim-vs-parsed completeness worksheet as CSV (pending is never clean)")
+    p.add_argument("--claims", help="JSON tool->claimed-count file for --completeness")
     args = p.parse_args(argv)
     supplied = list(sys.argv[1:] if argv is None else argv)
     if args.selftest:
@@ -605,6 +690,20 @@ def main(argv=None) -> int:
             _emit(QUICKSTART, None)
             return 0
         p.error("file is required unless --list is used")
+    if args.completeness:
+        if not args.claims:
+            p.error("--completeness requires --claims FILE")
+        claims, err = load_claims(args.claims)
+        if err:
+            print("sentinel: " + err, file=sys.stderr)
+            return 2
+        doc = run(Path(args.file), args.team, args.tool)
+        rows = completeness(claims, doc["results"])
+        _emit(completeness_csv(rows), args.out)
+        bad = any(r.get("count", 1 if r.get("error") else 0)
+                  for r in doc["results"])
+        incomplete = any(r["status"] != "verified" for r in rows)
+        return 1 if (bad or incomplete) else 0
     doc = run(Path(args.file), args.team, args.tool)
     if args.prioritize:
         output = prioritize_csv(doc["prioritized"])

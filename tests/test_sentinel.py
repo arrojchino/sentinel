@@ -356,6 +356,7 @@ class SentinelSelftestTests(unittest.TestCase):
         shutil.copy(s.HERE / "sentinel.py", base / "sentinel.py")
         shutil.copy(s.HERE / "teams.json", base / "teams.json")
         shutil.copy(s.HERE / "sentinel_expect.json", base / "sentinel_expect.json")
+        shutil.copytree(s.HERE / "rules", base / "rules")
         return base
 
     def test_committed_fixture_passes(self):
@@ -363,8 +364,10 @@ class SentinelSelftestTests(unittest.TestCase):
         self.assertEqual(st["status"], "pass")
         self.assertEqual(st["mode"], "selftest")
         self.assertTrue(all(c["status"] == "pass" for c in st["checks"]))
-        self.assertEqual(len(st["checks"]), 8)
+        self.assertEqual(len(st["checks"]), 9)
         self.assertEqual(st["tool_results"], 6)
+        by = {c["check"]: c for c in st["checks"]}
+        self.assertEqual(by["kind_coverage"]["status"], "pass")
 
     def test_fixture_hash_matches_hashlib(self):
         data = (s.HERE / "sentinel_fixture.json").read_bytes()
@@ -417,6 +420,66 @@ class SentinelSelftestTests(unittest.TestCase):
     def test_unknown_status_is_rejected(self):
         with self.assertRaises(ValueError):
             s._selftest_check("x", "bogus")
+
+
+class KindCoverageTests(unittest.TestCase):
+    """Every reachable finding kind must be declared in SEVERITY."""
+
+    def test_all_configured_kinds_are_declared(self):
+        cov = s.kind_coverage()
+        self.assertEqual(cov["errors"], [])
+        self.assertEqual(cov["unmapped"], [])
+        self.assertEqual(cov["declared"], cov["reachable"])
+        self.assertGreaterEqual(len(cov["reachable"]), 15)
+
+    def test_coverage_derives_kinds_from_every_emission_type(self):
+        kinds = set(s.kind_coverage()["reachable"])
+        # One representative kind from each rule type's emission inventory.
+        for kind in ("missing_header", "pattern", "missing_field", "hash_mismatch",
+                     "sha256", "invalid_state", "tool_not_allowed"):
+            self.assertIn(kind, kinds)
+
+    def test_missing_rules_directory_is_an_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            cov = s.kind_coverage(Path(d) / "absent")
+            self.assertTrue(cov["errors"])
+            self.assertEqual(cov["unmapped"], [])
+            self.assertIn("missing", cov["errors"][0])
+
+    def test_unmapped_rule_type_is_an_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            rules = Path(d)
+            (rules / "odd.json").write_text('{"type": "brand_new_type"}', encoding="utf-8")
+            cov = s.kind_coverage(rules)
+            self.assertTrue(any("unmapped rule type" in e for e in cov["errors"]))
+
+    def test_temporary_rule_emitting_new_kind_fails_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            shutil.copy(s.HERE / "sentinel.py", base / "sentinel.py")
+            shutil.copy(s.HERE / "teams.json", base / "teams.json")
+            shutil.copy(s.HERE / "sentinel_fixture.json", base / "sentinel_fixture.json")
+            shutil.copy(s.HERE / "sentinel_expect.json", base / "sentinel_expect.json")
+            shutil.copytree(s.HERE / "rules", base / "rules")
+            (base / "rules" / "zzprobe.json").write_text(
+                '{"type": "regex", "patterns": [], "emits": ["probe_only_kind"]}',
+                encoding="utf-8")
+
+            st = s.selftest(base)
+            self.assertEqual(st["status"], "fail")
+            by = {c["check"]: c for c in st["checks"]}
+            self.assertEqual(by["kind_coverage"]["status"], "fail")
+            self.assertIn("probe_only_kind", by["kind_coverage"]["detail"])
+
+            r = subprocess.run([sys.executable, str(base / "sentinel.py"), "--selftest"],
+                               capture_output=True)
+            self.assertEqual(r.returncode, 1)
+            self.assertEqual(r.stderr, b"")
+            self.assertNotIn(b"\r", r.stdout)
+            doc = json.loads(r.stdout)
+            self.assertEqual(doc["status"], "fail")
+            cov_by = {c["check"]: c for c in doc["checks"]}
+            self.assertEqual(cov_by["kind_coverage"]["status"], "fail")
 
 
 if __name__ == "__main__":

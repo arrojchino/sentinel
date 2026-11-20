@@ -100,6 +100,12 @@ python sentinel.py --selftest --out selftest.json
 
 Exit codes mirror the status: `0` for `pass`, `1` for `fail` (a regression in any compared field), `2` for `error` (fixture or expectation unreadable, or an invalid fixture, fail-closed and never a pass). This is a regression check on the reporting engine, not a risk verdict about the fixture: the input is known-noise and the answer is a fixed expectation. `--selftest` needs no file argument, takes precedence over the normal flags, and `--out` writes the same JSON to a file. Without it the default path is byte-identical to before.
 
+#### Kind coverage: every reachable kind is classified
+
+The scan-health report's "How results are classified" section states every rule it applies, and it treats an app with no published scan as Unknown rather than healthy. Sentinel carries that "state the whole classification surface" rule into its severity map. `RULE_KINDS` is the inventory of finding kinds each rule type can emit, and `reachable_kinds()` derives the live set from the rules actually configured in `rules/`; a rule may declare extra kinds in an optional `emits` list for local extensions. The `--selftest` `kind_coverage` check fails closed when a reachable kind is missing from `SEVERITY`: without it, `severity_of()` would silently absorb that kind into the documented `info` default, and a new rule could weaken the ranking without any test noticing.
+
+A missing rules directory, an unreadable or unparsable rule, or a rule type outside the inventory is an `error` (exit 2), never an empty coverage; an undeclared kind is a `fail` (exit 1). The committed rules currently emit 17 distinct kinds, all declared. This is a regression guard on the classification surface, not a risk verdict: the default file run keeps its byte-identical JSON envelope and 0/1/2 gate contract, and `severity_of()` keeps its documented `info` fallback for a kind that reaches it at runtime.
+
 ## CI gate contract
 
 Wireshark ships TShark as the line-oriented front-end that reuses the same dissection and filtering code as the GUI, so a scripted run sees exactly what an interactive run sees. Sentinel follows the same shape with one rule engine and one scriptable front-end: stdout carries the evidence envelope, and the exit status carries the decision the pipeline composes on. There is no separate "CI mode" that could drift from what a human runs.

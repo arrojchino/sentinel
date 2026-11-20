@@ -66,6 +66,22 @@ BUCKETS = ("indeterminate", "critical", "high", "medium", "low", "info", "clear"
 RANK = {name: i for i, name in enumerate(BUCKETS)}  # lower index = higher priority
 MUST_FIX = frozenset(("indeterminate", "critical", "high", "medium", "low"))
 
+# The emission inventory: the finding kinds check() can produce for each rule
+# type. A report that states its own classification rules must also account
+# for everything those rules can emit, so the --selftest kind-coverage check
+# derives the reachable kinds from the configured rules and fails closed if
+# any is absent from SEVERITY. The documented info default stays a fallback;
+# coverage is what stops an undeclared kind from being absorbed by it silently.
+RULE_KINDS = {
+    "headers": ("missing_header", "header_mismatch", "forbidden_value"),
+    "regex": ("pattern",),
+    "jsonfields": ("missing_field", "disallowed", "forbidden_value"),
+    "csvcols": ("missing_column", "missing_evidence", "hash_mismatch", "size_mismatch"),
+    "hash": ("sha256", "header"),
+    "states": ("invalid_state", "missing_evidence", "unresolved_state"),
+    "allowlist": ("tool_not_allowed", "missing_authorization", "expired_authorization"),
+}
+
 
 def severity_contract() -> dict:
     """The documented severity contract shared by the report and the selftest.
@@ -83,6 +99,56 @@ def severity_contract() -> dict:
 
 def severity_of(kind: str) -> str:
     return SEVERITY.get(kind, DEFAULT_SEVERITY)
+
+
+def reachable_kinds(rule_dir: str | Path | None = None) -> tuple:
+    """Return ``(kinds, errors)`` derived from the configured rule files.
+
+    Each rule's ``type`` maps through :data:`RULE_KINDS` to the kinds that
+    :func:`check` can emit for it; a rule may also declare additional kinds
+    in an optional ``emits`` list for local extensions. A missing rules
+    directory, an unreadable or unparsable rule, or a type outside the
+    inventory is an error, never an empty coverage: absent or unknown rules
+    cannot prove that every reachable kind was declared.
+    """
+    rule_dir = Path(rule_dir) if rule_dir is not None else RULES
+    if not rule_dir.is_dir():
+        return set(), [f"rules directory missing: {rule_dir}"]
+    files = sorted(rule_dir.glob("*.json"))
+    if not files:
+        return set(), [f"no rule files in {rule_dir}"]
+    kinds, errors = set(), []
+    for f in files:
+        try:
+            rules = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            errors.append(f"{f.name}: unreadable ({type(e).__name__})")
+            continue
+        rtype = rules.get("type") if isinstance(rules, dict) else None
+        if not isinstance(rtype, str) or rtype not in RULE_KINDS:
+            errors.append(f"{f.name}: unmapped rule type {rtype!r}")
+            continue
+        kinds.update(RULE_KINDS[rtype])
+        extra = rules.get("emits", [])
+        if isinstance(extra, list):
+            kinds.update(k for k in extra if isinstance(k, str) and k)
+    return kinds, errors
+
+
+def kind_coverage(rule_dir: str | Path | None = None) -> dict:
+    """Report which reachable finding kinds are declared in ``SEVERITY``.
+
+    An ``unmapped`` kind would be absorbed by :func:`severity_of`'s info
+    default; the selftest fails closed on it instead of reporting a pass,
+    so adding a rule that emits a new kind cannot silently weaken the ranking.
+    """
+    kinds, errors = reachable_kinds(rule_dir)
+    return {
+        "reachable": sorted(kinds),
+        "declared": sorted(k for k in kinds if k in SEVERITY),
+        "unmapped": sorted(k for k in kinds if k not in SEVERITY),
+        "errors": errors,
+    }
 
 
 def tool_severity(result: dict) -> str:
@@ -431,6 +497,23 @@ def selftest(base: str | Path | None = None) -> dict:
                 "checks": checks}
     checks.append(_selftest_check("parse", "pass",
                                   f"{len(results)} tool result(s)"))
+
+    # Kind coverage: derive the finding kinds reachable from the configured
+    # rules and require every one to be declared in SEVERITY. An undeclared
+    # kind would fall through to the documented info default, so the check
+    # fails closed (fail) instead of letting the drift report a pass.
+    cov = kind_coverage(base / "rules")
+    if cov["errors"]:
+        checks.append(_selftest_check(
+            "kind_coverage", "error", "; ".join(cov["errors"])))
+    elif cov["unmapped"]:
+        checks.append(_selftest_check(
+            "kind_coverage", "fail",
+            "undeclared kinds: " + ", ".join(cov["unmapped"])))
+    else:
+        checks.append(_selftest_check(
+            "kind_coverage", "pass",
+            f"{len(cov['reachable'])} reachable kinds all declared"))
 
     expected = expectation.get("expected", {})
     actual_prioritized = prioritized(results)

@@ -684,5 +684,111 @@ class FreshnessTests(unittest.TestCase):
             self.assertEqual(len(out["checks"]), len(g.CHECK_NAMES))
 
 
+class BucketCoverageTests(unittest.TestCase):
+    """Threshold coverage: every reachable bucket must map to a limit."""
+
+    def test_cvss_band_buckets_match_ranking(self):
+        self.assertEqual(g.cvss_band_buckets(), set(g.BUCKETS))
+
+    def test_default_vocabulary_is_fully_covered(self):
+        cov = g.bucket_coverage(g.CANONICAL, g.DEFAULTS)
+        self.assertEqual(cov["unmapped"], [])
+        self.assertEqual([c["bucket"] for c in cov["covered"]],
+                         ["critical", "high", "info", "low", "medium"])
+        by_bucket = {c["bucket"]: c["threshold"] for c in cov["covered"]}
+        self.assertEqual(by_bucket["critical"], "max_critical")
+        self.assertEqual(by_bucket["high"], "max_high")
+        self.assertEqual(by_bucket["medium"], "max_total")
+        self.assertEqual(by_bucket["low"], "max_total")
+        self.assertEqual(by_bucket["info"], "max_total")
+
+    def test_reachable_includes_custom_severity_and_emits(self):
+        smap = g.build_severity_map({"blocker": "critical"})
+        cov = g.bucket_coverage(smap, g.DEFAULTS,
+                                {"emits": ["medium", "severe", 7, ""]})
+        self.assertIn("critical", cov["reachable"])
+        self.assertIn("medium", cov["reachable"])
+        self.assertIn("severe", cov["reachable"])
+        self.assertNotIn(7, cov["reachable"])  # non-string emit ignored
+        self.assertEqual(cov["unmapped"], ["severe"])
+
+    def test_threshold_override_to_missing_limit_is_unmapped(self):
+        cov = g.bucket_coverage(g.CANONICAL, g.DEFAULTS,
+                                {"thresholds": {"critical": "max_bogus"}})
+        self.assertEqual(cov["unmapped"], ["critical"])
+
+    def test_threshold_override_to_configured_limit_is_covered(self):
+        limits = dict(g.DEFAULTS)
+        limits["max_medium"] = 1
+        cov = g.bucket_coverage(g.CANONICAL, limits,
+                                {"thresholds": {"medium": "max_medium"}})
+        self.assertEqual(cov["unmapped"], [])
+        by_bucket = {c["bucket"]: c["threshold"] for c in cov["covered"]}
+        self.assertEqual(by_bucket["medium"], "max_medium")
+
+    def test_cli_unmapped_bucket_rule_exits_2_indeterminate(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "findings.json"
+            f.write_bytes(json.dumps([{"severity": "low"}]).encode("utf-8"))
+            rules = Path(d) / "rules.json"
+            rules.write_text(json.dumps({"emits": ["severe"]}), encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(Path(g.__file__).resolve()), str(f),
+                 "--rules", str(rules)], capture_output=True)
+            self.assertEqual(proc.returncode, 2, proc.stderr.decode("utf-8", "replace"))
+            out = json.loads(proc.stdout)
+            self.assertEqual(out["verdict"], "indeterminate")
+            self.assertIn("unmapped bucket", out["reasons"][0])
+            self.assertEqual(out["bucket_coverage"]["unmapped"], ["severe"])
+            self.assertEqual(proc.stderr, b"")
+            self.assertNotIn(b"\r", proc.stdout)
+
+    def test_cli_unmapped_bucket_marks_bucket_coverage_check(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "findings.json"
+            f.write_bytes(json.dumps([{"severity": "low"}]).encode("utf-8"))
+            rules = Path(d) / "rules.json"
+            rules.write_text(json.dumps({"thresholds": {"critical": "max_gone"}}),
+                             encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(Path(g.__file__).resolve()), str(f),
+                 "--rules", str(rules), "--checks"], capture_output=True)
+            self.assertEqual(proc.returncode, 2)
+            rows = list(csv.reader(io.StringIO(proc.stdout.decode("utf-8"))))
+            self.assertEqual(rows[0], ["check", "status", "detail"])
+            self.assertEqual(rows[1][0], "bucket_coverage")
+            self.assertEqual(rows[1][1], "not_confirmed")
+
+    def test_cli_covered_rule_keeps_normal_verdict_and_exposes_coverage(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "findings.json"
+            f.write_bytes(json.dumps([{"severity": "blocker"}]).encode("utf-8"))
+            rules = Path(d) / "rules.json"
+            rules.write_text(json.dumps({"severities": {"blocker": "critical"},
+                                         "emits": ["medium"], "max_critical": 0}),
+                             encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(Path(g.__file__).resolve()), str(f),
+                 "--rules", str(rules)], capture_output=True)
+            self.assertEqual(proc.returncode, 1)  # critical breach still denies
+            out = json.loads(proc.stdout)
+            self.assertEqual(out["verdict"], "deny")
+            self.assertEqual(out["bucket_coverage"]["unmapped"], [])
+            self.assertNotIn("emits", out["limits"])
+            self.assertNotIn("thresholds", out["limits"])
+
+    def test_cli_without_rules_has_no_coverage_field(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "findings.json"
+            f.write_bytes(json.dumps([{"severity": "low"}]).encode("utf-8"))
+            proc = subprocess.run(
+                [sys.executable, str(Path(g.__file__).resolve()), str(f)],
+                capture_output=True)
+            self.assertEqual(proc.returncode, 0)
+            out = json.loads(proc.stdout)
+            self.assertNotIn("bucket_coverage", out)
+            self.assertEqual(len(out["checks"]), len(g.CHECK_NAMES))
+
+
 if __name__ == "__main__":
     unittest.main()

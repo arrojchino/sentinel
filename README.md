@@ -320,6 +320,18 @@ Columns, in order:
 
 An unreadable findings file marks `parse` as `not_confirmed` and leaves every downstream check `skipped`, with exit `2`. A short parse marks `completeness` as `not_confirmed`, an unknown severity marks `severity_vocabulary` as `not_confirmed`, and invalid CVSS marks `cvss_validity` as `not_confirmed`; in each case the thresholds are `skipped` because they were never evaluated. A deny still reports each threshold as `confirmed` with its effective count and limit in `detail`, so `confirmed` means evaluated, not passed. The exit status (`0`/`1`/`2`) is unchanged and still gates on the verdict, and `--prioritize` takes precedence when both flags are supplied. Output is UTF-8 with LF endings and a trailing newline, so a committed worksheet changes only when the decision changes.
 
+### Threshold coverage for declared buckets (--rules)
+
+Ghidra opens its README with a security warning: before trusting a result, a reader must know which versions are affected and read the advisories. The transferable rule is that a tool states the boundary of what it can check, so a gap never looks like a clean result. Ghidra exposes one analysis engine through interactive and scripted front-ends, so the same ground truth is reachable from a GUI and from CI; a gate owes the same honesty about its thresholds. `releasegate.py` now reports which severity buckets it can actually check and fails closed when an export declares a bucket it has no limit for.
+
+Every canonical bucket maps to a configured limit: `critical` to `max_critical`, `high` to `max_high`, and `medium`, `low`, `info` to `max_total`. Reachable buckets are derived from three sources - the native vocabulary, the values of a `--rules` `severities` map, and the buckets CVSS ranking can emit (kept tied to the ranking function, not a copied list). A rules file may also declare an `emits` list of buckets the upstream can produce, and a `thresholds` object to override the bucket-to-limit map, for example `{"medium": "max_medium"}` together with a configured `max_medium`.
+
+```bash
+python releasegate.py findings.json --rules rules.json    # rules.json: {"emits": ["medium"]}
+```
+
+The decision carries a `bucket_coverage` object with `reachable`, `covered` (each bucket plus the limit that governs it), and `unmapped`. When any reachable bucket has no threshold, or its threshold is not configured, the gate returns `indeterminate` with exit 2 instead of silently ignoring it; with `--checks`, that path emits one `bucket_coverage,not_confirmed` row naming the gap. The control keys `emits` and `thresholds` are consumed as configuration and never folded into `limits`. A run without `--rules` stays byte-identical: no `bucket_coverage` field and the seven standard checks. This is a coverage contract on the control surface, not a finding: a mapped bucket is checkable, not clean.
+
 ### Ground-truth fixture (--selftest)
 
 A deliberately vulnerable sample application ships with its known scan results so a detector can be checked against a fixed answer: the input is intentionally flawed and the published findings are the expected output, not a discovery about a real target. `releasegate.py` applies the same shape with `--selftest`: it scores the committed `releasegate_fixture.json` and compares the result to `releasegate_expect.json`, a ground-truth file recording the limits, canonical buckets, effective buckets and verdict that input must produce.

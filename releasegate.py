@@ -38,6 +38,19 @@ BUCKETS = frozenset(CANONICAL.values())
 RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 CVSS_KEYS = ("cvss", "cvss_score", "cvssScore")
 
+# Every bucket the gate can produce must be checkable against at least one
+# configured limit. critical/high have dedicated caps; medium/low/info are
+# governed by max_total. This is the gate's version of the finding-kind
+# emission inventory: a reachable bucket with no threshold would be silently
+# ignored by the verdict, so coverage fails closed instead of passing quietly.
+BUCKET_THRESHOLD = {
+    "critical": "max_critical",
+    "high": "max_high",
+    "medium": "max_total",
+    "low": "max_total",
+    "info": "max_total",
+}
+
 # A finding may carry the date it was first observed under one of several
 # names used by common scanners (the export vocabulary calls it "First Found
 # Date"). The gate reads the first key that parses and never guesses: no
@@ -91,6 +104,65 @@ def band_for_score(score: float) -> str:
     if score < 9.0:
         return "high"
     return "critical"
+
+
+# Sample scores that exercise every branch of band_for_score, so the reachable
+# CVSS buckets stay tied to the ranking function rather than a copied list.
+CVSS_BAND_SAMPLES = (0.0, 2.0, 5.0, 8.0, 10.0)
+
+
+def cvss_band_buckets() -> frozenset:
+    """All canonical buckets CVSS ranking can emit, derived from one source."""
+    return frozenset(band_for_score(s) for s in CVSS_BAND_SAMPLES)
+
+
+def reachable_buckets(severity_map, rules=None) -> set:
+    """Return every canonical bucket this configuration could produce.
+
+    A bucket is reachable when it is a value of the severity map (native
+    vocabulary or a team extension), one of the CVSS bands, or declared in a
+    rules file's optional ``emits`` list. ``emits`` mirrors the finding-kind
+    emission inventory used by the report tool: it lets an upstream export
+    declare a bucket the gate has not been configured to check, which must
+    fail closed rather than disappear from the verdict.
+    """
+    buckets = set(CANONICAL.values())
+    buckets.update(str(v).lower() for v in severity_map.values())
+    buckets.update(cvss_band_buckets())
+    if rules:
+        emit = rules.get("emits", [])
+        if isinstance(emit, list):
+            buckets.update(str(b).lower() for b in emit
+                           if isinstance(b, str) and b)
+    return buckets
+
+
+def bucket_coverage(severity_map, limits, rules=None) -> dict:
+    """Report which reachable buckets are checkable against a limit.
+
+    ``covered`` pairs each reachable bucket with the configured limit that
+    governs it; ``unmapped`` lists any reachable bucket with no threshold or
+    whose threshold is missing from ``limits``. A rules file may extend or
+    override the default bucket-to-limit map with a ``thresholds`` object.
+    An unmapped bucket is an incomplete control surface, never a clean gate.
+    """
+    thresholds = dict(BUCKET_THRESHOLD)
+    if rules:
+        override = rules.get("thresholds", {})
+        if isinstance(override, dict):
+            for bucket, key in override.items():
+                if isinstance(bucket, str) and bucket and isinstance(key, str) and key:
+                    thresholds[bucket.lower()] = key
+    reachable = reachable_buckets(severity_map, rules)
+    covered, unmapped = [], []
+    for bucket in sorted(reachable):
+        key = thresholds.get(bucket)
+        if key and key in limits:
+            covered.append({"bucket": bucket, "threshold": key})
+        else:
+            unmapped.append(bucket)
+    return {"reachable": sorted(reachable), "covered": covered,
+            "unmapped": unmapped}
 
 
 def effective_bucket(finding: dict, declared_bucket: str):
@@ -581,20 +653,44 @@ def main(argv=None) -> int:
     severity_map = dict(CANONICAL)
     raw = None
     findings = None
+    coverage = None
+    unmapped = []
     try:
         raw = Path(args.file).read_bytes()
         if args.rules:
             rules = json.loads(Path(args.rules).read_text(encoding="utf-8"))
             severity_map = build_severity_map(rules.pop("severities", None))
+            # Check coverage only after configured thresholds are in limits,
+            # then keep the control keys out of limits so 'emits'/'thresholds'
+            # can never masquerade as gate limits.
+            control = {k: rules[k] for k in ("emits", "thresholds") if k in rules}
+            rules.pop("emits", None)
+            rules.pop("thresholds", None)
             limits.update(rules)
+            coverage = bucket_coverage(severity_map, limits, control)
+            unmapped = coverage["unmapped"]
+            if unmapped:
+                raise ValueError("unmapped bucket(s) with no configured "
+                                 "threshold: " + ", ".join(unmapped))
         findings, claimed_total = load_findings(Path(args.file), raw)
     except (OSError, ValueError) as e:
+        reason = f"input error: {type(e).__name__}: {str(e)[:160]}"
+        check_name = "bucket_coverage" if unmapped else "parse"
         result = indeterminate(
-            f"input error: {type(e).__name__}: {str(e)[:160]}", limits,
-            checks=[_check("parse", CHECK_NOT_CONFIRMED,
+            reason, limits,
+            checks=[_check(check_name, CHECK_NOT_CONFIRMED,
                            f"{type(e).__name__}: {str(e)[:120]}")])
+        if unmapped:
+            result["bucket_coverage"] = coverage
+            # This is a distinct failure from an unreadable input: name the
+            # control gap directly instead of finalizing it into the generic
+            # parse row, so --checks tells the reviewer what to fix.
+            result["checks"] = [_check("bucket_coverage", CHECK_NOT_CONFIRMED,
+                                       f"{type(e).__name__}: {str(e)[:120]}")]
     else:
         result = decide(findings, limits, severity_map, claimed_total)
+        if coverage is not None:
+            result["bucket_coverage"] = coverage
     # Provenance describes the exact bytes that were read for parsing. An
     # unreadable file leaves raw None, so no manifest is attached - the gate
     # cannot tie a verdict to bytes it never saw.

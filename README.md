@@ -401,3 +401,13 @@ parseable.
 ## Limits
 
 Each check reports what its rules can see in the supplied file. A clean result is not proof of safety, and a finding is not a verdict. The bridge reads the alerts log file, not the Wazuh API.
+
+### Scope and limits
+
+A personal music server states its reach in one place - what it serves locally, what changes when it runs elsewhere, and plainly what it does not provide (no login, no built-in HTTPS, so anyone who can reach the port can listen). The transferable rule is to put the boundary beside the capability, in the terms a user needs to decide whether the tool fits. Sentinel states the gate's boundary in the same terms:
+
+- **Input scope:** the gate reads only the findings file it is given. It makes no network calls, contacts no scanner or ticketing system, and stores no credentials. Its view is limited to the bytes it was handed; the Wazuh bridge reads the alerts log file, not the Wazuh API.
+- **Meaning of a result:** an `allow`, or a `confirmed` zero in a worksheet, is a limit evaluation over exactly that input, not an assertion that no risk exists in the system the findings came from. A threshold can only measure the evidence supplied.
+- **What the boundary excludes:** a clean result cannot speak to findings the file omits, findings produced after it was written, or severities the vocabulary could not map - those make the decision indeterminate, never a pass. Stale or truncated evidence is pending, not clean.
+
+These limits are properties of the input contract, not defects to fix in code. Supplying a complete, current findings file is the caller's responsibility. The gate reports the limits it applied so a reviewer can see exactly what was, and was not, evaluated.

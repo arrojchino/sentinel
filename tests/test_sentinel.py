@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import io
 import json
 import subprocess
@@ -174,6 +175,59 @@ class TriageCsvTests(unittest.TestCase):
             self.assertEqual(r.stdout, "")
             self.assertEqual(out.read_text(encoding="utf-8").splitlines()[0],
                              "tool,severity,count,must_fix")
+
+
+class SourceProvenanceTests(unittest.TestCase):
+    def test_manifest_shape_from_supplied_bytes(self):
+        raw = b'{"a": 1}\n\n{"b": 2}\n'
+        m = s.source_manifest("capture.json", raw)
+        self.assertEqual(set(m), {"name", "bytes", "lines", "sha256"})
+        self.assertEqual(m["name"], "capture.json")
+        self.assertEqual(m["bytes"], len(raw))
+        self.assertEqual(m["lines"], 2)
+        self.assertEqual(m["sha256"], hashlib.sha256(raw).hexdigest())
+
+    def test_run_attaches_one_manifest_entry(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "in.json"
+            raw = b'{"state": "open_proof_gap", "tool": "dropper"}\n'
+            src.write_bytes(raw)
+            doc = s.run(src, None, None)
+            self.assertEqual(len(doc["source_files"]), 1)
+            m = doc["source_files"][0]
+            self.assertEqual(m["name"], "in.json")
+            self.assertEqual(m["bytes"], len(raw))
+            self.assertEqual(m["sha256"], hashlib.sha256(raw).hexdigest())
+
+    def test_cli_probe_sha256_matches_independent_read(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "in.json"
+            out = Path(d) / "out.json"
+            raw = b'{"state": "open_proof_gap", "tool": "dropper"}\n'
+            src.write_bytes(raw)
+            r = subprocess.run([sys.executable, str(Path(s.__file__).resolve()), str(src),
+                                "--out", str(out)], capture_output=True)
+            self.assertEqual(r.returncode, 1)
+            self.assertEqual(r.stderr, b"")
+            self.assertNotIn(b"\r", out.read_bytes())
+            doc = json.loads(out.read_text(encoding="utf-8"))
+            m = doc["source_files"][0]
+            self.assertEqual(m["bytes"], len(raw))
+            self.assertEqual(m["lines"], 1)
+            # Independent computation from a separate read of the same file.
+            self.assertEqual(m["sha256"], hashlib.sha256(src.read_bytes()).hexdigest())
+            self.assertEqual(src.read_bytes(), raw)  # detection never rewrites input
+
+    def test_prioritize_stays_observables_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "in.json"
+            src.write_text('{"state": "open_proof_gap", "tool": "dropper"}', encoding="utf-8")
+            r = subprocess.run([sys.executable, str(Path(s.__file__).resolve()), str(src),
+                                "--prioritize"], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 1)
+            self.assertEqual(r.stderr, "")
+            self.assertNotIn("source_files", r.stdout)
+            self.assertEqual(r.stdout.splitlines()[0], "tool,severity,count,must_fix")
 
 
 if __name__ == "__main__":

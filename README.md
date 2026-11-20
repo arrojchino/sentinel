@@ -52,6 +52,17 @@ Column contract - the header is always the first line:
 
 Rows keep the deterministic severity/count/name order from the envelope, so the first data row is the first tool to investigate. Output is UTF-8 with LF line endings and a trailing newline, so the bytes are stable across platforms and a committed triage CSV shows no spurious diff on a rerun. `--out` writes the same CSV to a file instead of stdout, and `--list` still takes precedence when both are given. The exit status is unchanged (`0`/`1`/`2`) and still gates on findings, so a caller can branch on the decision and hand the CSV to a triage queue from one invocation.
 
+### Detection provenance
+
+An open-source IDS separates detection from remediation - logs are analyzed in one place and blocked elsewhere - yet both stages share one reputation layer so a decision can always be traced to the signal that produced it. Sentinel applies that separation: `sentinel.py` detects and `releasegate.py` decides allow/deny, and both now carry the same `source_files` provenance contract so a gate verdict can be tied to the exact bytes detection read. The scanner's JSON envelope adds one `source_files` array with one entry per input:
+
+- `name` - the source file's basename.
+- `bytes` - the source size in bytes.
+- `lines` - the number of non-blank lines parsed from the source.
+- `sha256` - the SHA-256 of the exact bytes read, covering the same single byte read that fed every check.
+
+The hash comes from the one byte read used for analysis, so it always describes the bytes that produced the findings; the source is opened read-only and never rewritten. A hash establishes consistency between a report and its input - not authenticity, completeness or causation - and detection adds no maliciousness verdict to the source. Because the manifest is derived from input bytes, an unchanged source produces identical provenance on every run, and the shape matches the release gate, `iocscan.py` and `timeline.py` so all four tools share one contract. `--prioritize` output is unchanged: the CSV remains the prioritized tool list with no provenance rows.
+
 ## CI gate contract
 
 Wireshark ships TShark as the line-oriented front-end that reuses the same dissection and filtering code as the GUI, so a scripted run sees exactly what an interactive run sees. Sentinel follows the same shape with one rule engine and one scriptable front-end: stdout carries the evidence envelope, and the exit status carries the decision the pipeline composes on. There is no separate "CI mode" that could drift from what a human runs.

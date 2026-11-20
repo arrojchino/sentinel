@@ -94,6 +94,35 @@ def prioritize_csv(rows: list) -> str:
     return buf.getvalue()
 
 
+def source_manifest(path: str | Path, data: bytes | None = None) -> dict:
+    """Record provenance for the exact bytes the checks were built from.
+
+    Detection and remediation are deliberately separate stages: this scanner
+    detects, while ``releasegate.py`` decides allow/deny. They share one
+    provenance contract so a verdict can always be traced back to the exact
+    bytes detection read - the "detect here, remedy there" separation still
+    leaves one traceable decision layer. ``source_files`` uses the same shape
+    as ``timeline.py``, ``iocscan.py`` and ``releasegate.py``: name, byte size,
+    non-blank line count and SHA-256. The source is read only; a check never
+    modifies it or adds a maliciousness verdict.
+
+    When ``data`` is supplied the caller's single read is reused, so the hash
+    always covers the same bytes that were checked. A hash establishes
+    consistency between a report and its input, not authenticity, completeness
+    or causation.
+    """
+    p = Path(path)
+    if data is None:
+        data = p.read_bytes()
+    text = data.decode("utf-8", errors="replace")
+    return {
+        "name": p.name,
+        "bytes": len(data),
+        "lines": sum(1 for line in text.splitlines() if line.strip()),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
+
+
 def _emit(output: str, out: str | None) -> None:
     """Write output as exact UTF-8 bytes, with no platform newline translation.
 
@@ -210,7 +239,10 @@ def check(text: str, rules: dict, path: Path) -> list:
 
 
 def run(path: Path, team: str | None, tool: str | None) -> dict:
-    text = path.read_text(encoding="utf-8", errors="replace")
+    # One byte read feeds both the checks and the provenance hash, so the
+    # manifest always describes exactly the bytes that were analyzed.
+    data = path.read_bytes()
+    text = data.decode("utf-8", errors="replace")
     results = []
     for f in sorted(RULES.glob("*.json")):
         name = f.stem
@@ -225,7 +257,7 @@ def run(path: Path, team: str | None, tool: str | None) -> dict:
         except Exception as e:
             results.append({"tool": name, "error": f"{type(e).__name__}: {str(e)[:120]}"})
     ranked = _ranked(results)
-    return {
+    result = {
         "schema_version": SCHEMA,
         "team": team or "all",
         "input": str(path),
@@ -237,7 +269,9 @@ def run(path: Path, team: str | None, tool: str | None) -> dict:
             "default": DEFAULT_SEVERITY,
             "must_fix": sorted(MUST_FIX),
         },
+        "source_files": [source_manifest(path, data)],
     }
+    return result
 
 
 def main(argv=None) -> int:

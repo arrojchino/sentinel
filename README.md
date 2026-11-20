@@ -63,6 +63,24 @@ An open-source IDS separates detection from remediation - logs are analyzed in o
 
 The hash comes from the one byte read used for analysis, so it always describes the bytes that produced the findings; the source is opened read-only and never rewritten. A hash establishes consistency between a report and its input - not authenticity, completeness or causation - and detection adds no maliciousness verdict to the source. Because the manifest is derived from input bytes, an unchanged source produces identical provenance on every run, and the shape matches the release gate, `iocscan.py` and `timeline.py` so all four tools share one contract. `--prioritize` output is unchanged: the CSV remains the prioritized tool list with no provenance rows.
 
+### Confirmation worksheet (--checks)
+
+A TCP handshake checker reports each step (SYN, SYN-ACK, ACK) as matched True or False, where False means "the capture did not confirm that step" - not that the host is down, and never a reason to discard the step. Sentinel applies the same honesty to its own checks with `--checks`: stdout carries only a per-check confirmation worksheet as CSV, one row for every configured tool, with no JSON envelope and no prose.
+
+```bash
+python sentinel.py --team blue wazuh_alerts.json --checks > checks.csv
+```
+
+Column contract - the header is always the first line:
+
+- `tool` - a configured tool or rule name. Every tool appears exactly once, in name order, including ones that did not run; a check that was not selected is recorded, never silently dropped.
+- `status` - one of a closed vocabulary: `confirmed` (the check ran and produced findings, possibly zero), `not_confirmed` (it ran but errored, so no result could be confirmed from the evidence), or `skipped` (not selected by `--tool`/`--team`).
+- `findings` - the integer count for a `confirmed` check, empty for `not_confirmed` and `skipped`, so a genuine zero can never be confused with an error or a check that never ran.
+
+A `confirmed` zero means "no findings detected by this check", not "no risk" - confirmation is about evidence, not absolution. `not_confirmed` is never clean: an errored check is `indeterminate` in the severity ranking and keeps its error as evidence, so "no result" cannot masquerade as "no findings". This is the same distinction the risk-ordered report already makes, now exposed as a compact worksheet a caller can diff between runs to see which checks actually produced evidence. The JSON envelope also carries the worksheet as a `checks` array with the same three statuses and a `findings` count or `null`, so a consumer can read it without invoking the CLI flag.
+
+Output is UTF-8 with LF line endings and a trailing newline, so the bytes are stable across platforms and a committed worksheet shows no spurious diff on a rerun. `--out` writes the same CSV to a file instead of stdout, `--list` still takes precedence, and `--prioritize` takes precedence over `--checks` when both are given. Exit status is unchanged (`0`/`1`/`2`) and still gates on findings.
+
 ## CI gate contract
 
 Wireshark ships TShark as the line-oriented front-end that reuses the same dissection and filtering code as the GUI, so a scripted run sees exactly what an interactive run sees. Sentinel follows the same shape with one rule engine and one scriptable front-end: stdout carries the evidence envelope, and the exit status carries the decision the pipeline composes on. There is no separate "CI mode" that could drift from what a human runs.

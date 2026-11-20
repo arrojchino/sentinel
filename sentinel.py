@@ -94,6 +94,64 @@ def prioritize_csv(rows: list) -> str:
     return buf.getvalue()
 
 
+def tools() -> list:
+    """Return every configured tool name, sorted, regardless of any filter."""
+    return sorted(f.stem for f in RULES.glob("*.json"))
+
+
+# Closed per-check confirmation vocabulary, borrowed from the TCP handshake
+# checker pattern where each step shows matched True/False and False honestly
+# means "the capture did not confirm that step" rather than a hard failure.
+#   confirmed    - the check ran and produced a result (findings, possibly zero)
+#   not_confirmed - it ran but errored, so no result could be confirmed
+#   skipped      - it was not selected by --tool/--team
+# not_confirmed is never clean: an errored check is indeterminate in the risk
+# ranking, so "no result" can never masquerade as "no findings".
+CHECK_STATUSES = ("confirmed", "not_confirmed", "skipped")
+
+
+def checks(all_tools: list, results: list) -> list:
+    """Return a confirmation worksheet with one row per configured tool.
+
+    Every tool gets a row, including ones that did not run: a skipped check is
+    recorded, never dropped, so a reader can tell "no findings" from "not
+    checked". ``findings`` is the integer count only for a confirmed check and
+    None otherwise, so a zero count cannot be confused with an errored or
+    skipped check. A confirmed zero means "no findings detected by this check",
+    not "no risk" - confirmation is about evidence, not absolution.
+    """
+    by_name = {r["tool"]: r for r in results}
+    rows = []
+    for name in sorted(all_tools):
+        result = by_name.get(name)
+        if result is None:
+            rows.append({"tool": name, "status": "skipped", "findings": None})
+        elif result.get("error"):
+            rows.append({"tool": name, "status": "not_confirmed", "findings": None})
+        else:
+            rows.append({"tool": name, "status": "confirmed",
+                         "findings": result.get("count", 0)})
+    return rows
+
+
+def checks_csv(rows: list) -> str:
+    """Render the confirmation worksheet as a byte-stable CSV.
+
+    Column contract: tool,status,findings -- one row per configured tool, in
+    tool-name order. ``status`` is from the closed CHECK_STATUSES vocabulary;
+    ``findings`` is the integer count for a confirmed check and empty otherwise.
+    An LF terminator and trailing newline keep bytes stable across platforms,
+    so a committed worksheet changes only when the checks change.
+    """
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(("tool", "status", "findings"))
+    for row in rows:
+        writer.writerow((row["tool"], row["status"],
+                         row["findings"] if row["findings"] is not None else ""))
+    return buf.getvalue()
+
+
 def source_manifest(path: str | Path, data: bytes | None = None) -> dict:
     """Record provenance for the exact bytes the checks were built from.
 
@@ -263,6 +321,7 @@ def run(path: Path, team: str | None, tool: str | None) -> dict:
         "input": str(path),
         "results": [r for _, r in ranked],
         "prioritized": prioritized(results),
+        "checks": checks(tools(), results),
         "severity": {
             "buckets": list(BUCKETS),
             "kind_map": SEVERITY,
@@ -283,6 +342,8 @@ def main(argv=None) -> int:
     p.add_argument("--out", help="write the JSON envelope to a file instead of stdout")
     p.add_argument("--prioritize", action="store_true",
                    help="emit only the prioritized 'where to start' list as triage CSV")
+    p.add_argument("--checks", action="store_true",
+                   help="emit only the per-check confirmation worksheet as CSV (tool,status,findings)")
     args = p.parse_args(argv)
     if args.list:
         names = [n for n in sorted(TEAMS) if not args.team or args.team in TEAMS[n]]
@@ -291,8 +352,12 @@ def main(argv=None) -> int:
     if not args.file:
         p.error("file is required unless --list is used")
     doc = run(Path(args.file), args.team, args.tool)
-    output = (prioritize_csv(doc["prioritized"]) if args.prioritize
-              else json.dumps(doc, indent=2) + "\n")
+    if args.prioritize:
+        output = prioritize_csv(doc["prioritized"])
+    elif args.checks:
+        output = checks_csv(doc["checks"])
+    else:
+        output = json.dumps(doc, indent=2) + "\n"
     _emit(output, args.out)
     bad = any(r.get("count", 1 if r.get("error") else 0) for r in doc["results"])
     return 1 if bad else 0

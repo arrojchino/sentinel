@@ -230,5 +230,78 @@ class SourceProvenanceTests(unittest.TestCase):
             self.assertEqual(r.stdout.splitlines()[0], "tool,severity,count,must_fix")
 
 
+class ConfirmationWorksheetTests(unittest.TestCase):
+    def test_closed_vocabulary_and_no_dropped_tools(self):
+        rows = s.checks(["alpha", "beta", "gamma"], [
+            {"tool": "alpha", "count": 0, "findings": []},
+            {"tool": "beta", "error": "ValueError: bad"},
+        ])
+        by = {r["tool"]: r for r in rows}
+        self.assertEqual(set(by), {"alpha", "beta", "gamma"})
+        self.assertEqual(by["alpha"]["status"], "confirmed")
+        self.assertEqual(by["alpha"]["findings"], 0)  # zero is a real result
+        self.assertEqual(by["beta"]["status"], "not_confirmed")
+        self.assertIsNone(by["beta"]["findings"])
+        self.assertEqual(by["gamma"]["status"], "skipped")
+        self.assertIsNone(by["gamma"]["findings"])
+        self.assertTrue(all(r["status"] in s.CHECK_STATUSES for r in rows))
+
+    def test_csv_contract_and_byte_stability(self):
+        text = s.checks_csv([
+            {"tool": "alpha", "status": "confirmed", "findings": 0},
+            {"tool": "beta", "status": "not_confirmed", "findings": None},
+            {"tool": "gamma", "status": "skipped", "findings": None},
+        ])
+        self.assertEqual(text.splitlines()[0], "tool,status,findings")
+        parsed = list(csv.DictReader(io.StringIO(text)))
+        self.assertEqual(parsed[0], {"tool": "alpha", "status": "confirmed", "findings": "0"})
+        self.assertEqual(parsed[1]["findings"], "")
+        self.assertEqual(parsed[2]["findings"], "")
+        self.assertTrue(text.endswith("\n"))
+        self.assertNotIn("\r", text)
+
+    def test_cli_probe_emits_only_worksheet_and_gates(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "in.json"
+            src.write_text('{"state": "open_proof_gap", "tool": "dropper"}', encoding="utf-8")
+            r = subprocess.run([sys.executable, str(Path(s.__file__).resolve()), str(src),
+                                "--checks"], capture_output=True)
+            self.assertEqual(r.returncode, 1)
+            self.assertEqual(r.stderr, b"")
+            self.assertNotIn(b"\r", r.stdout)
+            self.assertNotIn(b'"schema_version"', r.stdout)
+            self.assertNotIn(b"source_files", r.stdout)
+            text = r.stdout.decode("utf-8")
+            self.assertEqual(text.splitlines()[0], "tool,status,findings")
+            parsed = list(csv.DictReader(io.StringIO(text)))
+            self.assertEqual([row["tool"] for row in parsed], s.tools())
+            self.assertTrue(all(row["status"] in s.CHECK_STATUSES for row in parsed))
+
+    def test_tool_filter_marks_others_skipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "in.json"
+            out = Path(d) / "out.json"
+            src.write_text('{"schema_version":1,"report_id":"r","generated_at":"now",'
+                           '"findings":[]}', encoding="utf-8")
+            r = subprocess.run([sys.executable, str(Path(s.__file__).resolve()), str(src),
+                                "--tool", "outputschema", "--out", str(out)], capture_output=True)
+            self.assertEqual(r.returncode, 0)
+            doc = json.loads(out.read_text(encoding="utf-8"))
+            by = {c["tool"]: c for c in doc["checks"]}
+            self.assertEqual(len(doc["checks"]), len(s.tools()))
+            self.assertEqual(by["outputschema"]["status"], "confirmed")
+            self.assertTrue(all(c["status"] == "skipped" for t, c in by.items()
+                                if t != "outputschema"))
+
+    def test_prioritize_takes_precedence_over_checks(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "in.json"
+            src.write_text('{"state": "open_proof_gap", "tool": "dropper"}', encoding="utf-8")
+            r = subprocess.run([sys.executable, str(Path(s.__file__).resolve()), str(src),
+                                "--prioritize", "--checks"], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 1)
+            self.assertEqual(r.stdout.splitlines()[0], "tool,severity,count,must_fix")
+
+
 if __name__ == "__main__":
     unittest.main()

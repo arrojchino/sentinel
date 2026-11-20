@@ -1,0 +1,6 @@
+{"timestamp":"2026-11-20T12:00:00+0000","rule":{"level":10,"description":"SSH brute force"},"agent":{"name":"web-01"},"srcip":"192.0.2.10"}
+{"timestamp":"2026-11-20T12:05:00+0000","rule":{"level":7,"description":"Auth failure"},"agent":{"name":"web-01"},"srcip":"192.0.2.10"}
+{"timestamp":"2026-11-20T12:06:00+0000","rule":{"level":5,"description":"Port scan"},"agent":{"name":"db-01"},"srcip":"198.51.100.20"}
+{"timestamp":"2026-11-20T12:07:00+0000","rule":{"level":12,"description":"Privilege escalation"},"agent":{"name":"db-01"},"srcip":"203.0.113.5"}
+not-json
+

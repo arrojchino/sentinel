@@ -168,6 +168,19 @@ The check uses the shared closed vocabulary: `confirmed` means a parseable newes
 
 The flag is opt-in: without `--max-age-days` no freshness field or row is added, so existing consumers keep the same three-check worksheet and byte-stable output. Age is a property of the supplied alerts, not a verdict about the network: a fresh tail with zero queued alerts still only means "nothing detected by this check" in the window that was read.
 
+### Ground-truth fixture (--selftest)
+
+Wireshark ships TShark as a line-oriented front-end that reuses the same dissection and filtering engine as the interactive GUI, so a scripted run sees exactly what a human sees. `wazuh_bridge.py` applies the one-engine-many-front-ends shape to its own pipeline: `--selftest` drives the very same `fetch` -> `parse_lines` -> `triage` -> `checks` functions as a normal run over a committed alert stream and compares the result to a fixed answer, so a silent regression in parsing or grouping is caught once.
+
+```bash
+python wazuh_bridge.py --selftest            # exit 0 on a match, 1 on regression, 2 on unreadable input
+python wazuh_bridge.py --selftest --out selftest.json
+```
+
+`wazuh_alert_fixture.txt` is a small JSON-lines stream: four alerts (a two-event high-level agent group, a below-threshold group and a top-level single alert) plus one malformed line and a blank line. `wazuh_expect.json` pins the fixture's SHA-256 and records the exact line, alert, malformed, group and queue counts, the ordered queue (agent, source, count, max level, first/last timestamps and rules), and the byte-stable `check,status,detail` worksheet that input must produce. The JSON report carries `mode` (`selftest`), `status`, `fixture`, `fixture_sha256`, `observed_counts` and a `checks` array. Checks use a closed `pass`/`fail`/`error`/`skipped` vocabulary, deliberately separate from the `confirmed`/`not_confirmed`/`skipped` confirmation worksheet: `fixture` and `expectation` verify the committed files were read, `fixture_hash` compares the exact bytes to the pinned SHA-256, `counts` checks all five counts at once, and `queue` and `checks` compare the ranking and worksheet exactly. The pinned hash is a consistency check, not an authenticity or risk claim.
+
+Exit codes mirror the status: `0` for `pass`, `1` for `fail` (a coverage regression in any compared field), `2` for `error` (fixture or expectation unreadable, or a failed pipeline read, fail-closed and never a pass). This is a regression check on the bridge pipeline, not a risk verdict about the fixture: the input is known-noise and the answer is a fixed expectation. `--selftest` needs no other argument and takes precedence over the normal flags; `--out` writes the same JSON to a file. Without it the default path is byte-identical to before and carries no `mode` or `observed_counts` field.
+
 ## Release gate
 
 `releasegate.py` turns a findings JSON array or an envelope into `allow`, `deny` or `indeterminate`:

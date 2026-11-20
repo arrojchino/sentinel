@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import io
 import json
 import subprocess
@@ -221,6 +222,124 @@ def checks_csv(rows: list) -> str:
     return buf.getvalue()
 
 
+# A ground-truth check answers "does this front-end still match its pinned
+# answer", not "did this input confirm a step". It exercises the very same
+# fetch -> parse -> triage -> checks pipeline as a normal run, so a pass is
+# evidence that the shipped engine (not a parallel reimplementation) still
+# produces the recorded result.
+SELFTEST_STATUSES = ("pass", "fail", "error", "skipped")
+
+
+def _selftest_check(name: str, status: str, detail: str = "") -> dict:
+    """Build one selftest row with a closed status and a short detail."""
+    if status not in SELFTEST_STATUSES:
+        raise ValueError(f"unknown selftest status: {status}")
+    return {"check": name, "status": status, "detail": detail}
+
+
+def selftest(base: str | Path | None = None) -> dict:
+    """Validate the bridge pipeline against a committed ground-truth fixture.
+
+    Like TShark and Wireshark sharing one dissection engine behind two
+    front-ends, this check drives the same production functions as a normal
+    run over ``wazuh_alert_fixture.txt`` and compares the result to
+    ``wazuh_expect.json``. It is a coverage regression check, not a risk
+    verdict: ``status`` is pass (all expectations met), fail (a regression),
+    or error (fixture or expectation unreadable, always fail-closed). The
+    pinned SHA-256 binds the exact fixture bytes; it says nothing about the
+    authenticity or completeness of the alerts those bytes represent.
+    """
+    base = Path(base) if base is not None else Path(__file__).resolve().parent
+    fixture = base / "wazuh_alert_fixture.txt"
+    expect_path = base / "wazuh_expect.json"
+    selftest_rows: list = []
+    try:
+        data = fixture.read_bytes()
+    except OSError as e:
+        selftest_rows.append(_selftest_check("fixture", "error",
+                                             f"unreadable: {type(e).__name__}"))
+        return {"schema_version": 1, "mode": "selftest", "status": "error",
+                "fixture": fixture.name, "checks": selftest_rows}
+    selftest_rows.append(_selftest_check("fixture", "pass", f"{len(data)} bytes"))
+    try:
+        expectation = json.loads(expect_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        selftest_rows.append(_selftest_check("expectation", "error",
+                                             f"unreadable: {type(e).__name__}"))
+        return {"schema_version": 1, "mode": "selftest", "status": "error",
+                "fixture": fixture.name, "checks": selftest_rows}
+    selftest_rows.append(_selftest_check("expectation", "pass", "ground truth loaded"))
+
+    actual_hash = hashlib.sha256(data).hexdigest()
+    pinned = expectation.get("fixture_sha256")
+    if pinned:
+        matched = pinned == actual_hash
+        selftest_rows.append(_selftest_check(
+            "fixture_hash", "pass" if matched else "fail",
+            "bytes match the pinned answer" if matched
+            else f"drift: expected {pinned}, got {actual_hash}"))
+    else:
+        selftest_rows.append(_selftest_check("fixture_hash", "skipped", "no pinned hash"))
+
+    # Drive the production pipeline over the committed fixture.
+    threshold = expectation.get("threshold", 7)
+    read = fetch(200, str(fixture))
+    if not read["ok"]:
+        selftest_rows.append(_selftest_check("pipeline", "error", read["error"]))
+        return {"schema_version": 1, "mode": "selftest", "status": "error",
+                "fixture": fixture.name, "checks": selftest_rows}
+    rows, malformed = parse_lines(read["raw"])
+    result = triage(rows, threshold)
+    result.update({"read_ok": True, "read_error": "", "lines_read": len(read["raw"]),
+                   "malformed": malformed})
+    result["checks"] = checks(result)
+    observed = {
+        "lines_read": result["lines_read"],
+        "alerts_read": result["alerts_read"],
+        "malformed": result["malformed"],
+        "groups": result["groups"],
+        "queued": len(result["queue"]),
+    }
+    observed["queue"] = result["queue"]
+    observed["checks_csv"] = checks_csv(result["checks"])
+
+    count_mismatches = [k for k in ("lines_read", "alerts_read", "malformed",
+                                    "groups", "queued")
+                        if expectation.get(k) != observed[k]]
+    if count_mismatches:
+        selftest_rows.append(_selftest_check("counts", "fail",
+                                             "mismatched: " + ", ".join(count_mismatches)))
+    else:
+        selftest_rows.append(_selftest_check("counts", "pass", "all counts match"))
+
+    if expectation.get("queue") == observed["queue"]:
+        selftest_rows.append(_selftest_check("queue", "pass", "exact order and content"))
+    else:
+        selftest_rows.append(_selftest_check("queue", "fail", "queue drift"))
+
+    if expectation.get("checks_csv") == observed["checks_csv"]:
+        selftest_rows.append(_selftest_check("checks", "pass", "byte-identical worksheet"))
+    else:
+        selftest_rows.append(_selftest_check("checks", "fail", "worksheet drift"))
+
+    if any(c["status"] == "error" for c in selftest_rows):
+        status = "error"
+    elif any(c["status"] == "fail" for c in selftest_rows):
+        status = "fail"
+    else:
+        status = "pass"
+    return {
+        "schema_version": 1,
+        "mode": "selftest",
+        "status": status,
+        "fixture": fixture.name,
+        "fixture_sha256": actual_hash,
+        "observed_counts": {k: observed[k] for k in
+                            ("lines_read", "alerts_read", "malformed", "groups", "queued")},
+        "checks": selftest_rows,
+    }
+
+
 def _emit(output: str, out: str | None) -> None:
     """Write output as exact UTF-8 bytes, with no platform newline translation."""
     data = output.encode("utf-8")
@@ -245,7 +364,13 @@ def main(argv=None) -> int:
                    help="emit only the per-check confirmation worksheet as CSV (check,status,detail)")
     p.add_argument("--max-age-days", type=_positive_days, default=None,
                    help="fail closed (exit 2) when the newest alert is older than this many days")
+    p.add_argument("--selftest", action="store_true",
+                   help="validate the pipeline against the committed ground-truth fixture (exit 0/1/2)")
     args = p.parse_args(argv)
+    if args.selftest:
+        st = selftest(Path(__file__).resolve().parent)
+        _emit(json.dumps(st, indent=2) + "\n", args.out)
+        return {"pass": 0, "fail": 1, "error": 2}[st["status"]]
     out_path = args.out if args.out is not None else "wazuh_queue.json"
     read = fetch(args.count, args.input)
     if not read["ok"]:

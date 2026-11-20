@@ -1,0 +1,31 @@
+{
+  "fixture": "wazuh_alert_fixture.txt",
+  "fixture_sha256": "8b9fa51eee4b24da3897efb29bcfa1579ce0f8792f7c11df039e2e626778f478",
+  "threshold": 7,
+  "lines_read": 5,
+  "alerts_read": 4,
+  "malformed": 1,
+  "groups": 3,
+  "queued": 2,
+  "queue": [
+    {
+      "agent": "db-01",
+      "srcip": "203.0.113.5",
+      "count": 1,
+      "max_level": 12,
+      "first": "2026-11-20T12:07:00+0000",
+      "last": "2026-11-20T12:07:00+0000",
+      "rules": ["Privilege escalation"]
+    },
+    {
+      "agent": "web-01",
+      "srcip": "192.0.2.10",
+      "count": 2,
+      "max_level": 10,
+      "first": "2026-11-20T12:00:00+0000",
+      "last": "2026-11-20T12:05:00+0000",
+      "rules": ["Auth failure", "SSH brute force"]
+    }
+  ],
+  "checks_csv": "check,status,detail\ntail,confirmed,5 line(s)\nparse,confirmed,\"4 alert(s), 1 malformed\"\ngrouping,confirmed,\"3 group(s), 2 queued\"\n"
+}

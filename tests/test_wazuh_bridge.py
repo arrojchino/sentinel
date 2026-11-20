@@ -193,5 +193,109 @@ class WazuhFreshnessTests(unittest.TestCase):
             self.assertEqual(len(report["checks"]), 3)
 
 
+class WazuhBridgeSelftestTests(unittest.TestCase):
+    BASE = SCRIPT.parent
+    FIXTURE = BASE / "wazuh_alert_fixture.txt"
+    EXPECT = BASE / "wazuh_expect.json"
+
+    def _staged(self, tmp, with_fixture=True, with_expect=True, mutate=None):
+        """Copy the script plus fixtures into a temp dir for real CLI probes."""
+        script = Path(tmp) / "wazuh_bridge.py"
+        script.write_bytes(SCRIPT.read_bytes())
+        if with_fixture:
+            (Path(tmp) / self.FIXTURE.name).write_bytes(self.FIXTURE.read_bytes())
+        if with_expect:
+            expectation = json.loads(self.EXPECT.read_text(encoding="utf-8"))
+            if mutate:
+                mutate(expectation)
+            (Path(tmp) / self.EXPECT.name).write_text(
+                json.dumps(expectation), encoding="utf-8")
+        return script
+
+    def test_selftest_status_vocabulary_is_closed(self):
+        with self.assertRaises(ValueError):
+            wb._selftest_check("x", "maybe")
+        for status in wb.SELFTEST_STATUSES:
+            self.assertEqual(wb._selftest_check("x", status)["status"], status)
+
+    def test_committed_fixture_passes_with_independent_hash(self):
+        st = wb.selftest(self.BASE)
+        self.assertEqual(st["status"], "pass", st["checks"])
+        self.assertEqual([c["status"] for c in st["checks"]],
+                         ["pass"] * len(st["checks"]))
+        self.assertNotIn("skipped", [c["status"] for c in st["checks"]])
+        expected = __import__("hashlib").sha256(self.FIXTURE.read_bytes()).hexdigest()
+        self.assertEqual(st["fixture_sha256"], expected)
+        self.assertEqual(st["observed_counts"], {
+            "lines_read": 5, "alerts_read": 4, "malformed": 1,
+            "groups": 3, "queued": 2})
+
+    def test_missing_fixture_is_error_fail_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            st = wb.selftest(d)
+            self.assertEqual(st["status"], "error")
+            self.assertEqual(st["checks"][0]["check"], "fixture")
+            self.assertEqual(st["checks"][0]["status"], "error")
+
+    def test_unreadable_expectation_is_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / self.FIXTURE.name).write_bytes(self.FIXTURE.read_bytes())
+            (Path(d) / self.EXPECT.name).write_text("{not json", encoding="utf-8")
+            st = wb.selftest(d)
+            self.assertEqual(st["status"], "error")
+            self.assertEqual(st["checks"][-1]["check"], "expectation")
+            self.assertEqual(st["checks"][-1]["status"], "error")
+
+    def test_wrong_expectation_is_fail(self):
+        with tempfile.TemporaryDirectory() as d:
+            script = self._staged(d, mutate=lambda e: e.__setitem__("alerts_read", 99))
+            r = subprocess.run([sys.executable, str(script), "--selftest"],
+                               cwd=d, capture_output=True)
+            self.assertEqual(r.returncode, 1)
+            st = json.loads(r.stdout.decode("utf-8"))
+            self.assertEqual(st["status"], "fail")
+            self.assertIn("counts", [c["check"] for c in st["checks"]])
+
+    def test_cli_selftest_is_byte_stable_exit0_and_short_circuits(self):
+        with tempfile.TemporaryDirectory() as d:
+            script = self._staged(d)
+            r = subprocess.run([sys.executable, str(script), "--selftest"],
+                               cwd=d, capture_output=True)
+            self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace"))
+            self.assertEqual(r.stderr, b"")
+            self.assertNotIn(b"\r", r.stdout)
+            st = json.loads(r.stdout.decode("utf-8"))
+            self.assertEqual(st["mode"], "selftest")
+            self.assertEqual(st["status"], "pass")
+            self.assertTrue(r.stdout.endswith(b"\n"))
+            # --selftest wins and writes nothing to the default report path.
+            self.assertFalse((Path(d) / "wazuh_queue.json").exists())
+            # No other flags required: --selftest alone succeeds.
+            r2 = subprocess.run([sys.executable, str(script), "--selftest"],
+                                cwd=d, capture_output=True)
+            self.assertEqual(r2.stdout, r.stdout)
+
+    def test_cli_selftest_missing_fixture_is_exit2(self):
+        with tempfile.TemporaryDirectory() as d:
+            script = self._staged(d, with_fixture=False)
+            r = subprocess.run([sys.executable, str(script), "--selftest"],
+                               cwd=d, capture_output=True)
+            self.assertEqual(r.returncode, 2)
+            self.assertEqual(r.stderr, b"")
+            st = json.loads(r.stdout.decode("utf-8"))
+            self.assertEqual(st["status"], "error")
+
+    def test_default_run_has_no_selftest_fields(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "alerts.jsonl"
+            src.write_text(GOOD, encoding="utf-8")
+            out = Path(d) / "report.json"
+            r = run_cli("--input", src, "--out", out, cwd=d)
+            self.assertEqual(r.returncode, 0)
+            report = json.loads(out.read_bytes())
+            self.assertNotIn("mode", report)
+            self.assertNotIn("observed_counts", report)
+
+
 if __name__ == "__main__":
     unittest.main()

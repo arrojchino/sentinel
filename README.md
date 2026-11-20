@@ -343,9 +343,11 @@ python releasegate.py --selftest --out selftest.json
 
 The fixture is a small findings array whose low-severity finding carries CVSS 9.8, so a correct gate must upgrade it into the critical bucket and return `deny`. The expectation pins the fixture's SHA-256 (so a byte change is a failure even when the decision is unchanged) and scores the fixture with its own `limits`, independent of `--rules`. The JSON report carries `mode`, `status`, `fixture`, `fixture_sha256`, `verdict` and a `checks` array whose status is a closed vocabulary from `SELFTEST_STATUSES`, deliberately separate from the confirmation statuses above:
 
-- `check` - one of `fixture`, `expectation`, `fixture_hash`, `score`, `verdict`, `total`, `buckets`, `effective_buckets`.
+- `check` - one of `fixture`, `expectation`, `fixture_hash`, `score`, `bucket_coverage`, `verdict`, `total`, `buckets`, `effective_buckets`.
 - `status` - `pass` (expectation met), `fail` (a coverage regression, including hash drift), `error` (an input could not be read, fail-closed and never a pass), or `skipped` (no pinned hash to compare).
 - `detail` - a short fact: a byte count, a match, or an expected-versus-observed difference.
+
+The expectation may also carry a `rules` object with the same control keys the runtime `--rules` accepts (`emits`, `thresholds`). The selftest replays it through the same `bucket_coverage` function the runtime gate uses and pins the full `reachable`/`covered`/`unmapped` answer under `bucket_coverage`: every bucket the committed rules can emit must map to a configured threshold. This borrows the signature-format rule that a rule's severity level comes from a closed vocabulary and an out-of-vocabulary level is a validation failure, never a silently accepted severity. An unmapped emitted bucket or a pinned answer that drifts makes the `bucket_coverage` check `fail` (exit `1`); no pin records `skipped`. The fixture bytes, limits, severity map and the `verdict`/`total`/`buckets`/`effective_buckets` comparisons are unchanged, so the default ground-truth answer stays byte-identical and the gate still needs no file argument.
 
 Exit codes mirror the status: `0` for `pass`, `1` for `fail`, `2` for `error`. This is a regression check on the gate's scoring, not a risk verdict about the fixture: the input is known-noise and the answer is a fixed expectation. `--selftest` needs no file argument, takes precedence over the normal flags, and `--out` writes the same JSON to a file.
 

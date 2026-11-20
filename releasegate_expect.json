@@ -7,5 +7,17 @@
   "verdict": "deny",
   "total": 4,
   "buckets": {"critical": 1, "high": 1, "low": 1, "info": 1},
-  "effective_buckets": {"critical": 2, "high": 1, "info": 1}
+  "effective_buckets": {"critical": 2, "high": 1, "info": 1},
+  "rules": {"emits": ["critical", "high", "medium", "low", "info"]},
+  "bucket_coverage": {
+    "reachable": ["critical", "high", "info", "low", "medium"],
+    "covered": [
+      {"bucket": "critical", "threshold": "max_critical"},
+      {"bucket": "high", "threshold": "max_high"},
+      {"bucket": "info", "threshold": "max_total"},
+      {"bucket": "low", "threshold": "max_total"},
+      {"bucket": "medium", "threshold": "max_total"}
+    ],
+    "unmapped": []
+  }
 }

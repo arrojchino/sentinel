@@ -514,7 +514,8 @@ class ReleasegateSelftestTests(unittest.TestCase):
         by_check = {c["check"]: c for c in st["checks"]}
         self.assertEqual(set(by_check),
                          {"fixture", "expectation", "fixture_hash", "score",
-                          "verdict", "total", "buckets", "effective_buckets"})
+                          "bucket_coverage", "verdict", "total", "buckets",
+                          "effective_buckets"})
         for check in by_check.values():
             self.assertEqual(check["status"], "pass")
             self.assertEqual(set(check), {"check", "status", "detail"})
@@ -579,6 +580,76 @@ class ReleasegateSelftestTests(unittest.TestCase):
         payload = json.loads(proc.stdout)
         self.assertEqual(payload["status"], "pass")
         self.assertEqual(payload["verdict"], "deny")
+
+    def _stage(self, d):
+        """Copy fixture + expectation into a temp dir and return the expectation."""
+        (Path(d) / "releasegate_fixture.json").write_bytes(
+            (self.base / "releasegate_fixture.json").read_bytes())
+        return json.loads((self.base / "releasegate_expect.json").read_text(
+            encoding="utf-8"))
+
+    @staticmethod
+    def _write_expect(d, exp):
+        (Path(d) / "releasegate_expect.json").write_text(
+            json.dumps(exp), encoding="utf-8")
+
+    @staticmethod
+    def _by_check(st):
+        return {c["check"]: c for c in st["checks"]}
+
+    def test_committed_rules_coverage_is_pass(self):
+        cov = self._by_check(g.selftest(self.base))["bucket_coverage"]
+        self.assertEqual(cov["status"], "pass")
+        self.assertEqual(cov["detail"], "all reachable buckets covered")
+
+    def test_unmapped_emitted_bucket_fails_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            exp = self._stage(d)
+            exp["rules"]["emits"].append("severe")
+            self._write_expect(d, exp)
+            st = g.selftest(d)
+            self.assertEqual(st["status"], "fail")
+            cov = self._by_check(st)["bucket_coverage"]
+            self.assertEqual(cov["status"], "fail")
+            self.assertIn("unmapped", cov["detail"])
+            for name in ("verdict", "total", "buckets", "effective_buckets"):
+                self.assertEqual(self._by_check(st)[name]["status"], "pass")
+
+    def test_pinned_coverage_drift_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            exp = self._stage(d)
+            exp["bucket_coverage"]["unmapped"] = ["ghost"]
+            self._write_expect(d, exp)
+            cov = self._by_check(g.selftest(d))["bucket_coverage"]
+            self.assertEqual(cov["status"], "fail")
+
+    def test_no_pinned_coverage_is_skipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            exp = self._stage(d)
+            exp.pop("bucket_coverage")
+            self._write_expect(d, exp)
+            st = g.selftest(d)
+            self.assertEqual(self._by_check(st)["bucket_coverage"]["status"],
+                             "skipped")
+            self.assertEqual(st["status"], "pass")
+
+    def test_cli_unmapped_bucket_selftest_exits_1(self):
+        with tempfile.TemporaryDirectory() as d:
+            exp = self._stage(d)
+            exp["rules"]["emits"].append("severe")
+            self._write_expect(d, exp)
+            script = Path(d) / "releasegate.py"
+            script.write_bytes((self.base / "releasegate.py").read_bytes())
+            proc = subprocess.run([sys.executable, str(script), "--selftest"],
+                                  capture_output=True)
+            self.assertEqual(proc.returncode, 1,
+                             proc.stderr.decode("utf-8", "replace"))
+            payload = json.loads(proc.stdout)
+            self.assertEqual(payload["status"], "fail")
+            self.assertEqual(self._by_check(payload)["bucket_coverage"]["status"],
+                             "fail")
+            self.assertEqual(proc.stderr, b"")
+            self.assertNotIn(b"\r", proc.stdout)
 
 
 class FreshnessTests(unittest.TestCase):

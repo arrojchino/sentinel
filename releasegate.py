@@ -521,6 +521,13 @@ def selftest(base: str | Path | None = None) -> dict:
     regression, not a risk verdict. ``status`` is pass (every expectation met),
     fail (a regression, including hash drift) or error (an input could not be
     read, which is fail-closed and never counted as a pass).
+
+    The expectation's committed ``rules`` object is also replayed through the
+    same ``bucket_coverage`` contract the runtime gate applies: every bucket
+    the rules can emit must map to a configured threshold. Borrowed from a
+    signature format where a rule's severity level is drawn from a closed
+    vocabulary and an out-of-vocabulary level is a validation failure, never
+    silently accepted. An unmapped bucket therefore fails the selftest closed.
     """
     base = Path(base) if base is not None else Path(__file__).resolve().parent
     fixture = base / "releasegate_fixture.json"
@@ -570,6 +577,26 @@ def selftest(base: str | Path | None = None) -> dict:
                 "checks": checks}
     checks.append(_selftest_check("score", "pass",
                                   f"verdict={decision['verdict']}"))
+
+    # Replay the coverage contract over the expectation's committed rules.
+    # Only the control keys (emits/thresholds) shape reachability; scoring
+    # limits and the severity map are unchanged, so the decision comparisons
+    # below and the fixture bytes stay identical to the published gate.
+    rules_cfg = expectation.get("rules", {})
+    if not isinstance(rules_cfg, dict):
+        rules_cfg = {}
+    control = {k: rules_cfg[k] for k in ("emits", "thresholds") if k in rules_cfg}
+    coverage = bucket_coverage(severity_map, limits, control)
+    pinned_coverage = expectation.get("bucket_coverage")
+    if pinned_coverage is None:
+        checks.append(_selftest_check("bucket_coverage", "skipped",
+                                      "no pinned coverage"))
+    else:
+        clean = coverage["unmapped"] == [] and coverage == pinned_coverage
+        checks.append(_selftest_check(
+            "bucket_coverage", "pass" if clean else "fail",
+            "all reachable buckets covered" if clean
+            else f"computed={coverage!r}, expected={pinned_coverage!r}"))
 
     # Compare the decision's canonical view to the pinned answer exactly. These
     # fields are the gate's scoreable output; prose reasons and the per-check

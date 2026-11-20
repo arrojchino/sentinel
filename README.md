@@ -207,6 +207,14 @@ Columns, in order:
 
 One row is emitted per (type, value, line) occurrence, so an observable seen on several lines keeps every location even after deduplication. Rows follow the deterministic (type, value, then line) order used by the JSON findings. Output is UTF-8 with LF endings and a trailing newline, so a committed triage CSV changes only when the observables change and never produces a platform-newline diff. `--out` writes the same bytes to a file instead of stdout. The exit status (`0`/`1`/`2`) is unchanged: `1` with findings, `0` without, and `2` for an incomplete parse or an input error, so a caller can still gate on evidence quality while handing the CSV to a reviewer.
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every push and pull request. It executes the
+unit tests, then probes the gate twice: `headerscheck` on `sample.txt` must exit
+`1` (missing security headers) and on `ci/clean_headers.txt` must exit `0`
+(complete header set). Both probes also assert that the JSON envelope is
+parseable.
+
 ## Limits
 
 Each check reports what its rules can see in the supplied file. A clean result is not proof of safety, and a finding is not a verdict. The bridge reads the alerts log file, not the Wazuh API.

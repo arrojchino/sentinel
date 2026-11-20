@@ -1,0 +1,32 @@
+name: Sentinel CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Gate denies missing security headers
+        run: |
+          if python sentinel.py --tool headerscheck sample.txt --out /tmp/dirty.json; then
+            echo "expected exit 1 (findings)"; exit 1
+          fi
+          test -s /tmp/dirty.json
+          python -c "import json; json.load(open('/tmp/dirty.json'))"
+
+      - name: Gate allows a complete header set
+        run: |
+          python sentinel.py --tool headerscheck ci/clean_headers.txt --out /tmp/clean.json
+          test -s /tmp/clean.json
+          python -c "import json; json.load(open('/tmp/clean.json'))"

@@ -188,6 +188,138 @@ def checks_csv(rows: list) -> str:
     return buf.getvalue()
 
 
+# Selftest statuses are deliberately distinct from CHECK_STATUSES: a
+# ground-truth check answers "does the grouping engine still match its known
+# answer", not "did this check confirm a step on this input". The same engine
+# feeds every front-end (JSON, --prioritize, --checks), so one fixed answer
+# guards all of them at once.
+SELFTEST_STATUSES = ("pass", "fail", "error", "skipped")
+
+
+def _selftest_check(name: str, status: str, detail: str = "") -> dict:
+    if status not in SELFTEST_STATUSES:
+        raise ValueError(f"unknown selftest status: {status}")
+    return {"check": name, "status": status, "detail": detail}
+
+
+def _group_tuple(group: dict) -> tuple:
+    """Normalize one group to the fields the ground truth pins.
+
+    Grouping, event counts, spans and long-dwell flags are compared exactly;
+    first/last timestamps are not part of the contract because the pinned
+    fixture hash already guarantees the exact input bytes behind them.
+    """
+    return (str(group.get("source", "-")), int(group.get("events", 0)),
+            int(group.get("span_seconds", 0)), bool(group.get("long_dwell", False)))
+
+
+def selftest(base: str | Path | None = None) -> dict:
+    """Validate session grouping against a committed ground-truth fixture.
+
+    The study target ships one decompiler engine behind several front-ends,
+    all consuming the same core. This tool likewise exposes one grouping
+    engine through JSON, a triage CSV and a confirmation worksheet; a single
+    known input plus its expected sessions guards every front-end against a
+    silent regression. ``timeline_fixture.jsonl`` is the known event stream and
+    ``timeline_expect.json`` records the sessions it must produce. The check
+    reports a coverage regression, not a risk verdict. ``status`` is pass (all
+    expectations met), fail (a regression) or error (input unreadable, which
+    is fail-closed and never counted as a pass).
+    """
+    base = Path(base) if base is not None else Path(__file__).resolve().parent
+    fixture = base / "timeline_fixture.txt"
+    expect_path = base / "timeline_expect.json"
+    checks: list = []
+    try:
+        data = fixture.read_bytes()
+    except OSError as e:
+        checks.append(_selftest_check("fixture", "error",
+                                      f"unreadable: {type(e).__name__}"))
+        return {"schema_version": 1, "mode": "selftest", "status": "error",
+                "fixture": fixture.name, "checks": checks}
+    checks.append(_selftest_check("fixture", "pass", f"{len(data)} bytes"))
+    try:
+        expectation = json.loads(expect_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        checks.append(_selftest_check("expectation", "error",
+                                      f"unreadable: {type(e).__name__}"))
+        return {"schema_version": 1, "mode": "selftest", "status": "error",
+                "fixture": fixture.name, "checks": checks}
+    checks.append(_selftest_check("expectation", "pass", "ground truth loaded"))
+
+    actual_hash = hashlib.sha256(data).hexdigest()
+    pinned = expectation.get("fixture_sha256")
+    if pinned:
+        matched = pinned == actual_hash
+        checks.append(_selftest_check(
+            "fixture_hash", "pass" if matched else "fail",
+            "bytes match the pinned answer" if matched
+            else f"drift: expected {pinned}, got {actual_hash}"))
+    else:
+        checks.append(_selftest_check("fixture_hash", "skipped", "no pinned hash"))
+
+    text = data.decode("utf-8", errors="replace")
+    try:
+        rows = [json.loads(line) for line in text.splitlines() if line.strip()]
+    except ValueError as e:
+        checks.append(_selftest_check("parse", "error", f"invalid JSON: {type(e).__name__}"))
+        return {"schema_version": 1, "mode": "selftest", "status": "error",
+                "fixture": fixture.name, "fixture_sha256": actual_hash,
+                "checks": checks}
+    checks.append(_selftest_check("parse", "pass", f"{len(rows)} event(s)"))
+
+    gap = expectation.get("gap_seconds", 900)
+    max_span = expectation.get("max_span_seconds", 3600)
+    result = sessions(rows, gap, max_span)
+
+    exp_sessions = expectation.get("sessions")
+    if isinstance(exp_sessions, int):
+        ok = exp_sessions == result["sessions"]
+        checks.append(_selftest_check(
+            "sessions", "pass" if ok else "fail",
+            f"{result['sessions']} observed of {exp_sessions} expected"))
+    else:
+        checks.append(_selftest_check("sessions", "skipped", "no expected count"))
+
+    observed_long = sum(1 for g in result["groups"] if g["long_dwell"])
+    exp_long = expectation.get("long_dwell")
+    if isinstance(exp_long, int):
+        ok = exp_long == observed_long
+        checks.append(_selftest_check(
+            "long_dwell", "pass" if ok else "fail",
+            f"{observed_long} observed of {exp_long} expected"))
+    else:
+        checks.append(_selftest_check("long_dwell", "skipped", "no expected count"))
+
+    expected_groups = [_group_tuple(g) for g in expectation.get("groups", [])]
+    actual_groups = [_group_tuple(g) for g in result["groups"]]
+    if expected_groups and expected_groups == actual_groups:
+        checks.append(_selftest_check("groups", "pass", "exact match"))
+    else:
+        checks.append(_selftest_check(
+            "groups", "fail",
+            f"expected {len(expected_groups)} group(s), got {len(actual_groups)}"))
+
+    if any(c["status"] == "error" for c in checks):
+        status = "error"
+    elif any(c["status"] == "fail" for c in checks):
+        status = "fail"
+    else:
+        status = "pass"
+    return {
+        "schema_version": 1,
+        "mode": "selftest",
+        "status": status,
+        "fixture": fixture.name,
+        "fixture_sha256": actual_hash,
+        "gap_seconds": gap,
+        "max_span_seconds": max_span,
+        "expected_sessions": exp_sessions,
+        "observed_sessions": result["sessions"],
+        "checks": checks,
+    }
+
+
 def _emit(output: str, out: str | None) -> None:
     """Write output as exact UTF-8 bytes, with no platform newline translation."""
     data = output.encode("utf-8")
@@ -203,7 +335,7 @@ def _emit(output: str, out: str | None) -> None:
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Event timeline correlation")
-    p.add_argument("file")
+    p.add_argument("file", nargs="?")
     p.add_argument("--gap", type=int, default=900, help="seconds before a new session starts")
     p.add_argument("--max-span", type=int, default=3600)
     p.add_argument("--out", help="write output to a file instead of stdout")
@@ -213,7 +345,15 @@ def main(argv=None) -> int:
                    help="emit only the per-check confirmation worksheet as CSV (check,status,detail)")
     p.add_argument("--coverage", action="store_true",
                    help="report the observed event window and add a coverage check")
+    p.add_argument("--selftest", action="store_true",
+                   help="validate grouping against the committed ground-truth fixture (exit 0/1/2)")
     args = p.parse_args(argv)
+    if args.selftest:
+        st = selftest(Path(__file__).resolve().parent)
+        _emit(json.dumps(st, indent=2) + "\n", args.out)
+        return {"pass": 0, "fail": 1, "error": 2}[st["status"]]
+    if args.file is None:
+        p.error("file is required unless --selftest is given")
     data = Path(args.file).read_bytes()
     text = data.decode("utf-8", errors="replace")
     rows = [json.loads(line) for line in text.splitlines() if line.strip()]

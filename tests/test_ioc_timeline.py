@@ -652,5 +652,90 @@ class IocSelftestTests(unittest.TestCase):
         self.assertEqual(payload["status"], "pass")
 
 
+class TimelineSelftestTests(unittest.TestCase):
+    def setUp(self):
+        self.base = Path(tl.__file__).resolve().parent
+
+    def _copy_ground_truth(self, d):
+        (Path(d) / "timeline_expect.json").write_bytes(
+            (self.base / "timeline_expect.json").read_bytes())
+
+    def test_committed_fixture_matches_ground_truth(self):
+        st = tl.selftest(self.base)
+        self.assertEqual(st["status"], "pass")
+        self.assertEqual(st["mode"], "selftest")
+        self.assertEqual(st["expected_sessions"], 4)
+        self.assertEqual(st["observed_sessions"], 4)
+        self.assertEqual(st["gap_seconds"], 900)
+        self.assertEqual(st["max_span_seconds"], 600)
+        by_check = {c["check"]: c for c in st["checks"]}
+        self.assertEqual(set(by_check),
+                         {"fixture", "expectation", "fixture_hash", "parse",
+                          "sessions", "long_dwell", "groups"})
+        for check in by_check.values():
+            self.assertEqual(check["status"], "pass")
+            self.assertEqual(set(check), {"check", "status", "detail"})
+        self.assertEqual(by_check["groups"]["detail"], "exact match")
+        self.assertEqual(st["fixture_sha256"],
+                         hashlib.sha256((self.base / "timeline_fixture.txt").read_bytes()).hexdigest())
+
+    def test_regression_is_fail_not_clean(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._copy_ground_truth(d)
+            (Path(d) / "timeline_fixture.txt").write_text(
+                '{"timestamp": "2026-01-01T08:10:00", "source": "10.0.0.1"}\n',
+                encoding="utf-8")
+            st = tl.selftest(d)
+            self.assertEqual(st["status"], "fail")
+            by_check = {c["check"]: c for c in st["checks"]}
+            self.assertEqual(by_check["sessions"]["status"], "fail")
+            self.assertEqual(by_check["sessions"]["detail"], "1 observed of 4 expected")
+            self.assertEqual(by_check["long_dwell"]["status"], "fail")
+            self.assertEqual(by_check["long_dwell"]["detail"], "0 observed of 1 expected")
+            self.assertEqual(by_check["groups"]["status"], "fail")
+            self.assertIn("got 1", by_check["groups"]["detail"])
+
+    def test_hash_drift_is_fail_even_when_grouping_matches(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._copy_ground_truth(d)
+            original = (self.base / "timeline_fixture.txt").read_bytes()
+            (Path(d) / "timeline_fixture.txt").write_bytes(original + b"\n")
+            st = tl.selftest(d)
+            self.assertEqual(st["status"], "fail")
+            by_check = {c["check"]: c for c in st["checks"]}
+            self.assertEqual(by_check["fixture_hash"]["status"], "fail")
+            self.assertIn("drift", by_check["fixture_hash"]["detail"])
+            self.assertEqual(by_check["sessions"]["status"], "pass")
+            self.assertEqual(by_check["groups"]["status"], "pass")
+
+    def test_unreadable_fixture_is_error_not_pass(self):
+        with tempfile.TemporaryDirectory() as d:
+            st = tl.selftest(d)
+            self.assertEqual(st["status"], "error")
+            self.assertEqual(st["checks"], [
+                {"check": "fixture", "status": "error", "detail": "unreadable: FileNotFoundError"}])
+
+    def test_bad_expectation_is_error_not_pass(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "timeline_fixture.txt").write_text(
+                '{"timestamp": "2026-01-01T08:10:00", "source": "10.0.0.1"}\n',
+                encoding="utf-8")
+            (Path(d) / "timeline_expect.json").write_text("{not json", encoding="utf-8")
+            st = tl.selftest(d)
+            self.assertEqual(st["status"], "error")
+            self.assertEqual(st["checks"][1]["check"], "expectation")
+            self.assertEqual(st["checks"][1]["status"], "error")
+
+    def test_cli_selftest_exit_zero_with_parseable_json(self):
+        proc = subprocess.run(
+            [sys.executable, str(self.base / "timeline.py"), "--selftest"],
+            capture_output=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
+        self.assertEqual(proc.stderr, b"")
+        self.assertNotIn(b"\r", proc.stdout)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["status"], "pass")
+
+
 if __name__ == "__main__":
     unittest.main()

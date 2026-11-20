@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "description": "Ground truth for timeline_fixture.txt. A known event stream with the limits, session count, long-dwell count and exact session grouping it must produce, so grouping coverage can be validated against a fixed answer without inventing a risk verdict. The 08:10 and 08:25 events share a source and sit within the gap, forming one session that spans 900s and is flagged as a long dwell; the same source at 10:00 is a separate session.",
+  "fixture": "timeline_fixture.txt",
+  "fixture_sha256": "e953c5a0b69880240bad725e7c6e48e85a08fb0dbe8b71c4f4f0bf92606af623",
+  "gap_seconds": 900,
+  "max_span_seconds": 600,
+  "sessions": 4,
+  "long_dwell": 1,
+  "groups": [
+    {"source": "10.0.0.1", "events": 1, "span_seconds": 0, "long_dwell": false},
+    {"source": "10.0.0.2", "events": 1, "span_seconds": 0, "long_dwell": false},
+    {"source": "10.0.0.1", "events": 2, "span_seconds": 900, "long_dwell": true},
+    {"source": "10.0.0.1", "events": 1, "span_seconds": 0, "long_dwell": false}
+  ]
+}

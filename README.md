@@ -400,6 +400,17 @@ python timeline.py alerts.jsonl --coverage --checks > checks.csv
 
 The JSON report gains `oldest_event`, `newest_event` and `observation_span_seconds` (all null when no event timestamp could be parsed). The `coverage` row uses the shared closed vocabulary: `confirmed` when a newest event and span were observed, with `detail` as `newest <timestamp>; span <seconds>s`; `not_confirmed` when the input was read but no event timestamp parsed; `skipped` when the input was unreadable, where the existing `parse` and `provenance` checks already fail closed. The flag is opt-in: without `--coverage` the JSON report and the three-check worksheet are byte-identical to the default, so existing consumers are unaffected. A confirmed zero long dwell still means nothing was detected by that check over that window, not that no dwell risk exists.
 
+### Ground-truth fixture (--selftest)
+
+ILSpy exposes one decompiler engine through several front-ends - a desktop UI, editor extensions, the `ilspycmd` CLI, a dotnet tool, PowerShell cmdlets and NuGet packages - all consuming the same core, so a regression in the engine shows up through every one of them. `timeline.py` applies the one-engine-many-front-ends shape with a fixed ground truth: `timeline_fixture.txt` is a known event stream and `timeline_expect.json` records the limits and sessions it must produce. `--selftest` groups the committed fixture and compares the result to that answer, so a silent regression in grouping, long-dwell flags or counts is caught once and guards the JSON report, `--prioritize` and `--checks` together.
+
+```
+python timeline.py --selftest            # exit 0 on a match, 1 on regression, 2 on unreadable input
+python timeline.py --selftest --out selftest.json
+```
+
+The JSON report carries `mode` (`selftest`), `status`, `fixture`, `fixture_sha256`, `gap_seconds`, `max_span_seconds`, `expected_sessions`, `observed_sessions` and a `checks` array. Checks use a closed `pass`/`fail`/`error`/`skipped` vocabulary, deliberately separate from the `confirmed`/`not_confirmed`/`skipped` confirmation worksheet: `fixture` and `expectation` verify the committed files were read, `fixture_hash` compares the exact bytes to a pinned SHA-256, `parse` records the event count, and `sessions`, `long_dwell` and `groups` compare the grouping exactly (source, event count, span seconds and long-dwell flag per session). The pinned hash is a consistency check, not an authenticity or risk claim. Exit codes mirror the status: `0` for `pass`, `1` for `fail` (a coverage regression), `2` for `error` (fixture or expectation unreadable, or invalid JSON, fail-closed and never a pass). This is a regression check on the grouping engine, not a risk verdict about the fixture. `--selftest` needs no file argument, takes precedence over the normal flags, and `--out` writes the same JSON to a file. Without it the default path is byte-identical to before.
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push and pull request. It executes the

@@ -21,6 +21,12 @@ python sentinel.py --team blue wazuh_alerts.json --out result.json
 
 Input is a local file. Output is a JSON envelope with `schema_version`, `team`, `input` and per-tool findings. Stdlib only; no network, no writes to the input. Exit status is the machine-facing contract; see CI gate contract below.
 
+### No-argument quick start
+
+A network scanner prints its most common options when invoked with no parameters instead of failing, so a first run teaches the interface without opening the manual. Sentinel applies that progressive-disclosure pattern: `python sentinel.py` with no arguments prints a short quick-start of the common commands to stdout and exits `0`. It is a discovery aid, not a gate result - no input was analyzed and no verdict is implied.
+
+An invocation that supplies arguments but no input file (for example `python sentinel.py --tool headerscheck`) is still a usage error and exits `2`, unchanged. Every invocation that includes a file keeps the exact JSON envelope and the `0`/`1`/`2` contract below. The quick-start is UTF-8 with LF endings and a trailing newline, so its bytes are stable across platforms.
+
 ## Risk-ordered report
 
 A multi-organization sync tool sends its team a CSV action list, one row per action, with an explicit status per row and a `must_fix` yes/no, ordered so the team knows what to fix first. Sentinel applies the same shape to its own envelope: a tool is not just a count, it is a prioritized work item.

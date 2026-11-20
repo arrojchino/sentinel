@@ -303,5 +303,49 @@ class ConfirmationWorksheetTests(unittest.TestCase):
             self.assertEqual(r.stdout.splitlines()[0], "tool,severity,count,must_fix")
 
 
+class QuickstartTests(unittest.TestCase):
+    """A bare invocation is a discovery aid (the scanner no-parameter pattern)."""
+
+    def test_zero_args_returns_quickstart_and_exit_zero(self):
+        out = io.StringIO()
+        old = sys.stdout
+        try:
+            sys.stdout = out
+            code = s.main([])
+        finally:
+            sys.stdout = old
+        self.assertEqual(code, 0)
+        text = out.getvalue()
+        self.assertIn("--list --team blue", text)
+        self.assertIn("Exit status is the CI contract", text)
+        self.assertIn("--prioritize", text)
+
+    def test_argument_without_file_is_still_a_usage_error(self):
+        with self.assertRaises(SystemExit) as ctx:
+            s.main(["--tool", "headerscheck"])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_cli_probe_no_args_is_lf_only_and_empty_stderr(self):
+        r = subprocess.run([sys.executable, str(Path(s.__file__).resolve())],
+                           capture_output=True)
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(r.stderr, b"")
+        self.assertNotIn(b"\r", r.stdout)
+        self.assertTrue(r.stdout.endswith(b"\n"))
+        self.assertIn(b"--list --team blue", r.stdout)
+
+    def test_file_path_bytes_are_unchanged_by_quickstart(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "in.json"
+            src.write_text('{"state": "open_proof_gap", "tool": "dropper"}', encoding="utf-8")
+            r = subprocess.run([sys.executable, str(Path(s.__file__).resolve()), str(src)],
+                               capture_output=True)
+            self.assertEqual(r.returncode, 1)
+            self.assertNotIn(b"\r", r.stdout)
+            doc = json.loads(r.stdout)
+            self.assertIn("results", doc)
+            self.assertIn("prioritized", doc)
+
+
 if __name__ == "__main__":
     unittest.main()

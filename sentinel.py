@@ -20,6 +20,24 @@ RULES = HERE / "rules"
 TEAMS = json.loads((HERE / "teams.json").read_text(encoding="utf-8"))
 SCHEMA = 1
 
+# A no-argument invocation is a discovery aid, not a usage error: show the most
+# common commands the way a network scanner prints its common options when run
+# bare. File-based runs and argument errors keep their existing exit contract.
+QUICKSTART = """Sentinel: focused security checks by team (read-only, local file, stdlib only, no network).
+
+No file was given. The most common commands are:
+
+  python sentinel.py --list --team blue                      List tools for a team
+  python sentinel.py --team appsec sample.txt                Run a team's checks on a file
+  python sentinel.py --tool headerscheck sample.txt          Run a single tool
+  python sentinel.py --team blue alerts.json --out r.json    Save the JSON envelope
+  python sentinel.py --team blue alerts.json --prioritize    Emit the triage CSV
+  python sentinel.py --team blue alerts.json --checks        Emit the checks worksheet
+
+Exit status is the CI contract: 0 clean, 1 findings or a tool error, 2 a usage error.
+Run 'python sentinel.py --help' for every option.
+"""
+
 # Every finding kind maps to an explicit severity bucket so the report can lead
 # with the tool that needs attention first. Unknown kinds fall back to "info"
 # (a documented default, never a silent promotion to high). A tool that failed
@@ -345,11 +363,15 @@ def main(argv=None) -> int:
     p.add_argument("--checks", action="store_true",
                    help="emit only the per-check confirmation worksheet as CSV (tool,status,findings)")
     args = p.parse_args(argv)
+    supplied = list(sys.argv[1:] if argv is None else argv)
     if args.list:
         names = [n for n in sorted(TEAMS) if not args.team or args.team in TEAMS[n]]
         print("\n".join(names))
         return 0
     if not args.file:
+        if not supplied:
+            _emit(QUICKSTART, None)
+            return 0
         p.error("file is required unless --list is used")
     doc = run(Path(args.file), args.team, args.tool)
     if args.prioritize:

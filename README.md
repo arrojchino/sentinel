@@ -136,6 +136,19 @@ python wazuh_bridge.py --count 150 --threshold 6
 python sentinel.py --team blue wazuh_alerts.json --out blue.json
 ```
 
+### Alert freshness (--max-age-days)
+
+An Internet-wide scanner reports what it did and did not observe in the same progress line - sent, received, dropped and hit rate - so a zero is always stated with its accounting rather than left to look like a clean run. The transferable rule is that silence is not absence: a result must say when the evidence it saw was produced. `wazuh_bridge.py` applies that rule to the bounded alert tail it reads. With `--max-age-days N` it reports the age of the newest alert it actually parsed and adds a fourth `freshness` check to the confirmation worksheet:
+
+```bash
+python wazuh_bridge.py --input alerts.jsonl --checks --max-age-days 7 > checks.csv
+python wazuh_bridge.py --input alerts.jsonl --max-age-days 7 --out report.json
+```
+
+The check uses the shared closed vocabulary: `confirmed` means a parseable newest timestamp was within the limit, `not_confirmed` means it breached the limit or no alert timestamp could be parsed, and a failed read leaves `freshness` out of the worksheet entirely (the existing `tail`/`parse` checks already fail closed). A breach exits `2`, the same fail-closed status as an unreadable source, so a stale or unparseable tail can never be consumed as "no alerts". The JSON report carries `freshness` (with `status`, `newest`, `age_days`, `max_age_days` and a short `detail`), the `newest_alert_timestamp` and `newest_alert_age_days` fields, and the same `checks` array; the stdout summary adds `freshness` when the flag is set.
+
+The flag is opt-in: without `--max-age-days` no freshness field or row is added, so existing consumers keep the same three-check worksheet and byte-stable output. Age is a property of the supplied alerts, not a verdict about the network: a fresh tail with zero queued alerts still only means "nothing detected by this check" in the window that was read.
+
 ## Release gate
 
 `releasegate.py` turns a findings JSON array or an envelope into `allow`, `deny` or `indeterminate`:

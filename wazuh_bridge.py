@@ -34,6 +34,66 @@ def _check(name: str, status: str, detail: str = "") -> dict:
     return {"check": name, "status": status, "detail": detail}
 
 
+def parse_timestamp(value) -> datetime | None:
+    """Parse a Wazuh ISO-8601 timestamp into an aware datetime, or None.
+
+    Wazuh emits ``2026-11-18T14:53:49.864-0600``: a colonless numeric UTC
+    offset that older ``fromisoformat`` versions reject. Normalize the offset
+    and a trailing ``Z`` or space separator before parsing. An unparseable
+    value returns None so freshness can fail closed instead of guessing.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    if " " in text and "T" not in text:
+        text = text.replace(" ", "T", 1)
+    if len(text) >= 5 and text[-5] in "+-" and text[-4:].isdigit():
+        text = text[:-5] + text[-5] + text[-4:-2] + ":" + text[-2:]
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def freshness(rows: list[dict], max_age_days: float, now: datetime | None = None) -> dict:
+    """Evaluate the newest alert age against a limit, fail-closed by design.
+
+    A quiet alert log is not evidence of a quiet network: it may simply be
+    stale. This reports the age of the newest alert actually observed and
+    marks the check ``not_confirmed`` when that age breaches the limit or no
+    timestamp can be parsed, so silence can never be mistaken for absence.
+    """
+    if now is None:
+        now = datetime.now().astimezone()
+    stamps = [s for s in (parse_timestamp(a.get("timestamp")) for a in rows) if s is not None]
+    if not stamps:
+        return {"status": "not_confirmed", "breach": True, "newest": None,
+                "age_days": None, "max_age_days": max_age_days,
+                "detail": f"no parseable timestamp in {len(rows)} alert(s)"}
+    newest = max(stamps)
+    if newest.tzinfo is None:
+        newest = newest.replace(tzinfo=now.tzinfo)
+    age_days = (now - newest).total_seconds() / 86400.0
+    breach = age_days > max_age_days
+    return {"status": "not_confirmed" if breach else "confirmed", "breach": breach,
+            "newest": newest.isoformat(timespec="seconds"),
+            "age_days": round(age_days, 4), "max_age_days": max_age_days,
+            "detail": f"newest alert {age_days:.2f}d old, limit {max_age_days:g}d"}
+
+
+def _positive_days(raw) -> float:
+    """argparse type: a strictly positive, finite age limit in days."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("--max-age-days must be a positive number")
+    if value <= 0 or value != value:  # reject zero, negatives and NaN
+        raise argparse.ArgumentTypeError("--max-age-days must be a positive number")
+    return value
+
+
 def fetch(count: int, source: str | None = None) -> dict:
     """Read raw alert lines from WSL, or from a local file when ``source`` is set.
 
@@ -121,7 +181,7 @@ def checks(result: dict) -> list:
     """
     read_ok = bool(result.get("read_ok"))
     if read_ok:
-        return [
+        rows = [
             _check("tail", "confirmed", f"{result.get('lines_read', 0)} line(s)"),
             _check("parse", "confirmed",
                    f"{result.get('alerts_read', 0)} alert(s), "
@@ -130,11 +190,18 @@ def checks(result: dict) -> list:
                    f"{result.get('groups', 0)} group(s), "
                    f"{len(result.get('queue', []))} queued"),
         ]
-    return [
-        _check("tail", "not_confirmed", result.get("read_error", "read failed")),
-        _check("parse", "not_confirmed", "input not read"),
-        _check("grouping", "skipped", "parse not confirmed"),
-    ]
+    else:
+        rows = [
+            _check("tail", "not_confirmed", result.get("read_error", "read failed")),
+            _check("parse", "not_confirmed", "input not read"),
+            _check("grouping", "skipped", "parse not confirmed"),
+        ]
+    # Freshness is an opt-in fourth check. When absent the worksheet keeps its
+    # original three rows, so an unchanged run produces byte-identical output.
+    if "freshness" in result:
+        f = result["freshness"]
+        rows.append(_check("freshness", f["status"], f["detail"]))
+    return rows
 
 
 def checks_csv(rows: list) -> str:
@@ -176,6 +243,8 @@ def main(argv=None) -> int:
                    help="write output to a file instead of stdout (default: wazuh_queue.json for the JSON report)")
     p.add_argument("--checks", action="store_true",
                    help="emit only the per-check confirmation worksheet as CSV (check,status,detail)")
+    p.add_argument("--max-age-days", type=_positive_days, default=None,
+                   help="fail closed (exit 2) when the newest alert is older than this many days")
     args = p.parse_args(argv)
     out_path = args.out if args.out is not None else "wazuh_queue.json"
     read = fetch(args.count, args.input)
@@ -195,6 +264,13 @@ def main(argv=None) -> int:
     result = triage(rows, args.threshold)
     result.update({"read_ok": True, "read_error": "", "lines_read": len(read["raw"]),
                    "malformed": malformed})
+    breached = False
+    if args.max_age_days is not None:
+        f = freshness(rows, args.max_age_days)
+        breached = f["breach"]
+        result["freshness"] = f
+        result["newest_alert_timestamp"] = f["newest"]
+        result["newest_alert_age_days"] = f["age_days"]
     result["checks"] = checks(result)
     if args.checks:
         _emit(checks_csv(result["checks"]), args.out)
@@ -202,8 +278,10 @@ def main(argv=None) -> int:
         Path(out_path).write_bytes((json.dumps(result, indent=2) + "\n").encode("utf-8"))
         summary = {"alerts_read": result["alerts_read"], "groups": result["groups"],
                    "queued": len(result["queue"]), "out": out_path}
+        if args.max_age_days is not None:
+            summary["freshness"] = result["freshness"]["status"]
         _emit(json.dumps(summary, indent=2) + "\n", None)
-    return 0
+    return 2 if breached else 0
 
 
 if __name__ == "__main__":

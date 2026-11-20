@@ -1,3 +1,4 @@
+import argparse
 import contextlib
 import csv
 import io
@@ -6,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -106,6 +108,89 @@ class WazuhBridgeChecksTests(unittest.TestCase):
             report = json.loads(out.read_bytes())
             self.assertTrue(report["read_ok"])
             self.assertEqual([c["status"] for c in report["checks"]], ["confirmed"] * 3)
+
+
+class WazuhFreshnessTests(unittest.TestCase):
+    def test_parse_timestamp_handles_wazuh_offsets(self):
+        self.assertIsNotNone(wb.parse_timestamp("2026-11-18T14:53:49.864-0600"))
+        self.assertIsNotNone(wb.parse_timestamp("2026-11-18T14:53:49Z"))
+        self.assertIsNotNone(wb.parse_timestamp("2026-11-18 14:53:49+0000"))
+        for bad in ("", None, "not-a-date", 123):
+            self.assertIsNone(wb.parse_timestamp(bad))
+
+    def test_freshness_reports_age_and_breach(self):
+        now = datetime(2026, 11, 20, 12, 0, tzinfo=timezone.utc)
+        fresh = wb.freshness([{"timestamp": "2026-11-20T08:00:00+0000"}], 1, now)
+        self.assertEqual(fresh["status"], "confirmed")
+        self.assertFalse(fresh["breach"])
+        self.assertEqual(fresh["age_days"], 0.1667)
+        stale = wb.freshness([{"timestamp": "2026-11-01T08:00:00+0000"}], 1, now)
+        self.assertEqual(stale["status"], "not_confirmed")
+        self.assertTrue(stale["breach"])
+        missing = wb.freshness([{"timestamp": "n/a"}], 1, now)
+        self.assertEqual(missing["status"], "not_confirmed")
+        self.assertTrue(missing["breach"])
+        self.assertIsNone(missing["newest"])
+
+    def test_positive_days_rejects_bad_values(self):
+        for bad in ("0", "-1", "abc", "nan"):
+            with self.assertRaises(argparse.ArgumentTypeError):
+                wb._positive_days(bad)
+        self.assertEqual(wb._positive_days("1.5"), 1.5)
+
+    def test_cli_freshness_pass_exit0_and_breach_exit2(self):
+        now = datetime.now().astimezone()
+        fresh_ts = (now - timedelta(hours=1)).isoformat(timespec="seconds")
+        stale_ts = (now - timedelta(days=40)).isoformat(timespec="seconds")
+        with tempfile.TemporaryDirectory() as d:
+            fresh = Path(d) / "fresh.jsonl"
+            fresh.write_text(
+                '{"timestamp":"%s","rule":{"level":3},"agent":{"name":"a"}}\n' % fresh_ts,
+                encoding="utf-8")
+            r = run_cli("--input", fresh, "--checks", "--max-age-days", "7", cwd=d)
+            self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace"))
+            parsed = list(csv.reader(io.StringIO(r.stdout.decode("utf-8"))))
+            self.assertEqual(parsed[-1][0], "freshness")
+            self.assertEqual(parsed[-1][1], "confirmed")
+            self.assertNotIn(b"\r", r.stdout)
+
+            stale = Path(d) / "stale.jsonl"
+            stale.write_text(
+                '{"timestamp":"%s","rule":{"level":3},"agent":{"name":"a"}}\n' % stale_ts,
+                encoding="utf-8")
+            out = Path(d) / "checks.csv"
+            r = run_cli("--input", stale, "--checks", "--max-age-days", "7",
+                        "--out", out, cwd=d)
+            self.assertEqual(r.returncode, 2)
+            self.assertEqual(r.stderr, b"")
+            parsed = list(csv.reader(io.StringIO(out.read_bytes().decode("utf-8"))))
+            self.assertEqual(parsed[-1][0], "freshness")
+            self.assertEqual(parsed[-1][1], "not_confirmed")
+
+    def test_cli_unparseable_timestamp_fails_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "bad.jsonl"
+            src.write_text(
+                '{"timestamp":"n/a","rule":{"level":3},"agent":{"name":"a"}}\n',
+                encoding="utf-8")
+            out = Path(d) / "report.json"
+            r = run_cli("--input", src, "--out", out, "--max-age-days", "7", cwd=d)
+            self.assertEqual(r.returncode, 2)
+            self.assertEqual(r.stderr, b"")
+            report = json.loads(out.read_bytes())
+            self.assertEqual(report["freshness"]["status"], "not_confirmed")
+            self.assertEqual([c["status"] for c in report["checks"]][-1], "not_confirmed")
+
+    def test_default_json_report_has_no_freshness(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "alerts.jsonl"
+            src.write_text(GOOD, encoding="utf-8")
+            out = Path(d) / "report.json"
+            r = run_cli("--input", src, "--out", out, cwd=d)
+            self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace"))
+            report = json.loads(out.read_bytes())
+            self.assertNotIn("freshness", report)
+            self.assertEqual(len(report["checks"]), 3)
 
 
 if __name__ == "__main__":

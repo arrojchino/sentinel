@@ -224,6 +224,17 @@ Columns, in order:
 
 One row is emitted per session, so a flagged dwell is handed off for review but never dropped: the CSV is a complete view of the grouped evidence, and the JSON report stays the authoritative record. Rows follow the deterministic chronological order of the JSON groups, so the first data row is the earliest session. Output is UTF-8 with LF endings and a trailing newline, so a committed handoff changes only when sessions change and never produces a platform-newline diff. `--out` writes the same bytes to a file instead of stdout. The exit status is unchanged: `1` when any session has a long dwell, `0` otherwise, so a caller can still gate on dwell policy while giving the CSV to a reviewer.
 
+### Source provenance
+
+A local identity-timeline tool keeps a source-files worksheet beside the review worksheets: source metadata and SHA-256 hashes let an analyst tie a finished timeline back to the exact input it was built from, and the tool never modifies the source. `timeline.py` applies the same rule in its JSON report. The `source_files` array holds one entry per input with:
+
+- `name` - the source file's basename.
+- `bytes` - the source size in bytes.
+- `lines` - the number of non-blank lines parsed from the source.
+- `sha256` - the SHA-256 of the exact bytes read, covering the same read that was grouped.
+
+The hash is computed from the single byte read used for parsing, so it always describes the bytes that produced the sessions. The source is opened read-only, and grouping never adds a maliciousness verdict: a long dwell stays a review flag, not a finding. Because the manifest is derived from input bytes, an unchanged source produces identical provenance on every run.
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push and pull request. It executes the

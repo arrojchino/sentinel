@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import io
 import json
 import sys
@@ -68,6 +69,27 @@ def prioritize_csv(result: dict) -> str:
     return buf.getvalue()
 
 
+def source_manifest(path: str | Path, data: bytes | None = None) -> dict:
+    """Record provenance for the exact bytes a timeline was built from.
+
+    Mirrors a source-files worksheet: name, byte size, non-blank line count
+    and SHA-256 let a reviewer tie the grouping back to the input it read.
+    The source is read only; nothing is rewritten or decorated with a verdict.
+    When ``data`` is supplied the caller's single read is reused, so the hash
+    always covers the same bytes that were parsed.
+    """
+    p = Path(path)
+    if data is None:
+        data = p.read_bytes()
+    text = data.decode("utf-8", errors="replace")
+    return {
+        "name": p.name,
+        "bytes": len(data),
+        "lines": sum(1 for line in text.splitlines() if line.strip()),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
+
+
 def _emit(output: str, out: str | None) -> None:
     """Write output as exact UTF-8 bytes, with no platform newline translation."""
     data = output.encode("utf-8")
@@ -90,11 +112,11 @@ def main(argv=None) -> int:
     p.add_argument("--prioritize", action="store_true",
                    help="emit only session summaries as review CSV (session,source,event_count,long_dwell)")
     args = p.parse_args(argv)
-    rows = []
-    for line in Path(args.file).read_text(encoding="utf-8", errors="replace").splitlines():
-        if line.strip():
-            rows.append(json.loads(line))
+    data = Path(args.file).read_bytes()
+    text = data.decode("utf-8", errors="replace")
+    rows = [json.loads(line) for line in text.splitlines() if line.strip()]
     result = sessions(rows, args.gap, args.max_span)
+    result["source_files"] = [source_manifest(args.file, data)]
     output = (prioritize_csv(result) if args.prioritize
               else json.dumps(result, indent=2) + "\n")
     _emit(output, args.out)

@@ -1,5 +1,6 @@
 import contextlib
 import csv
+import hashlib
 import io
 import json
 import subprocess
@@ -213,6 +214,54 @@ class TimelinePrioritizeCsvTests(unittest.TestCase):
                 [json.loads(line) for line in self.FIXTURE.splitlines()],
                 gap_seconds=9000, max_span_seconds=3600)
             self.assertEqual(out.read_bytes(), tl.prioritize_csv(result).encode("utf-8"))
+
+
+class TimelineSourceManifestTests(unittest.TestCase):
+    FIXTURE = (
+        '{"timestamp": "2026-01-01T08:00:00", "source": "a"}\n'
+        '{"timestamp": "2026-01-01T08:00:30", "source": "a"}\n'
+    )
+
+    def test_manifest_fields_and_hash(self):
+        data = self.FIXTURE.encode("utf-8")
+        m = tl.source_manifest("alerts.jsonl", data)
+        self.assertEqual(m["name"], "alerts.jsonl")
+        self.assertEqual(m["bytes"], len(data))
+        self.assertEqual(m["lines"], 2)
+        self.assertEqual(m["sha256"], hashlib.sha256(data).hexdigest())
+
+    def test_blank_lines_excluded_and_single_read_reused(self):
+        data = b'{"timestamp": "2026-01-01T08:00:00"}\n\n   \n'
+        m = tl.source_manifest("x.jsonl", data)
+        self.assertEqual(m["lines"], 1)
+
+    def test_cli_emits_manifest_matching_actual_file_bytes(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "alerts.jsonl"
+            src.write_bytes(self.FIXTURE.encode("utf-8"))
+            before = src.read_bytes()
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = tl.main([str(src)])
+            doc = json.loads(buf.getvalue())
+            self.assertEqual(code, 0)
+            entry = doc["source_files"][0]
+            self.assertEqual(entry["name"], "alerts.jsonl")
+            self.assertEqual(entry["bytes"], len(before))
+            self.assertEqual(entry["sha256"], hashlib.sha256(before).hexdigest())
+            self.assertEqual(src.read_bytes(), before)  # source is never modified
+
+    def test_prioritize_output_unchanged_by_manifest(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "alerts.jsonl"
+            src.write_bytes(self.FIXTURE.encode("utf-8"))
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = tl.main([str(src), "--prioritize"])
+            self.assertEqual(code, 0)
+            rows = list(csv.reader(io.StringIO(buf.getvalue())))
+            self.assertEqual(rows[0], ["session", "source", "event_count", "long_dwell"])
+            self.assertEqual(len(rows), 2)  # header + one session, no provenance rows
 
 
 if __name__ == "__main__":

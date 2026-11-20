@@ -20,6 +20,96 @@ RULES = HERE / "rules"
 TEAMS = json.loads((HERE / "teams.json").read_text(encoding="utf-8"))
 SCHEMA = 1
 
+# Every finding kind maps to an explicit severity bucket so the report can lead
+# with the tool that needs attention first. Unknown kinds fall back to "info"
+# (a documented default, never a silent promotion to high). A tool that failed
+# to run is "indeterminate" and outranks everything: unknown risk is never last.
+SEVERITY = {
+    "hash_mismatch": "critical",
+    "tool_not_allowed": "critical",
+    "missing_evidence": "high",
+    "expired_authorization": "high",
+    "missing_authorization": "high",
+    "forbidden_value": "high",
+    "disallowed": "high",
+    "invalid_state": "medium",
+    "unresolved_state": "medium",
+    "missing_column": "medium",
+    "header_mismatch": "medium",
+    "size_mismatch": "low",
+    "missing_field": "low",
+    "missing_header": "low",
+    "pattern": "info",
+    "sha256": "info",
+    "header": "info",
+}
+DEFAULT_SEVERITY = "info"
+BUCKETS = ("indeterminate", "critical", "high", "medium", "low", "info", "clear")
+RANK = {name: i for i, name in enumerate(BUCKETS)}  # lower index = higher priority
+MUST_FIX = frozenset(("indeterminate", "critical", "high", "medium", "low"))
+
+
+def severity_of(kind: str) -> str:
+    return SEVERITY.get(kind, DEFAULT_SEVERITY)
+
+
+def tool_severity(result: dict) -> str:
+    if result.get("error"):
+        return "indeterminate"
+    findings = result.get("findings") or []
+    if not findings:
+        return "clear"
+    return min((severity_of(f.get("kind", "")) for f in findings), key=lambda b: RANK[b])
+
+
+def _ranked(results: list) -> list:
+    """Return (severity, result) pairs ordered by risk, then count, then name."""
+    pairs = [(tool_severity(r), r) for r in results]
+    pairs.sort(key=lambda pair: (RANK[pair[0]], -pair[1].get("count", 0), pair[1]["tool"]))
+    return pairs
+
+
+def prioritized(results: list) -> list:
+    return [
+        {"tool": r["tool"], "severity": sev, "count": r.get("count", 0),
+         "must_fix": sev in MUST_FIX}
+        for sev, r in _ranked(results)
+    ]
+
+
+def prioritize_csv(rows: list) -> str:
+    """Render the prioritized 'where to start' list as a triage CSV.
+
+    Column contract: tool, severity, count, must_fix -- one row per tool, in
+    prioritized order. must_fix is lowercase true/false so any consumer can
+    parse it without a special case. An LF terminator and a trailing newline
+    keep the bytes deterministic across platforms.
+    """
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(("tool", "severity", "count", "must_fix"))
+    for row in rows:
+        writer.writerow((row["tool"], row["severity"], row["count"],
+                         "true" if row["must_fix"] else "false"))
+    return buf.getvalue()
+
+
+def _emit(output: str, out: str | None) -> None:
+    """Write output as exact UTF-8 bytes, with no platform newline translation.
+
+    A triage CSV may be committed as an audit artifact; stable bytes keep a
+    rerun from producing a spurious diff on a different host.
+    """
+    data = output.encode("utf-8")
+    if out:
+        Path(out).write_bytes(data)
+        return
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is None:
+        sys.stdout.write(output)  # captured stdout (e.g. StringIO) has no buffer
+    else:
+        buffer.write(data)
+
 
 def has_key(obj, key: str) -> bool:
     if isinstance(obj, dict):
@@ -134,7 +224,20 @@ def run(path: Path, team: str | None, tool: str | None) -> dict:
             results.append({"tool": name, "count": len(findings), "findings": findings})
         except Exception as e:
             results.append({"tool": name, "error": f"{type(e).__name__}: {str(e)[:120]}"})
-    return {"schema_version": SCHEMA, "team": team or "all", "input": str(path), "results": results}
+    ranked = _ranked(results)
+    return {
+        "schema_version": SCHEMA,
+        "team": team or "all",
+        "input": str(path),
+        "results": [r for _, r in ranked],
+        "prioritized": prioritized(results),
+        "severity": {
+            "buckets": list(BUCKETS),
+            "kind_map": SEVERITY,
+            "default": DEFAULT_SEVERITY,
+            "must_fix": sorted(MUST_FIX),
+        },
+    }
 
 
 def main(argv=None) -> int:
@@ -144,6 +247,8 @@ def main(argv=None) -> int:
     p.add_argument("--tool", help="run one tool by name")
     p.add_argument("--list", action="store_true", help="list tools for the selected team")
     p.add_argument("--out", help="write the JSON envelope to a file instead of stdout")
+    p.add_argument("--prioritize", action="store_true",
+                   help="emit only the prioritized 'where to start' list as triage CSV")
     args = p.parse_args(argv)
     if args.list:
         names = [n for n in sorted(TEAMS) if not args.team or args.team in TEAMS[n]]
@@ -152,11 +257,9 @@ def main(argv=None) -> int:
     if not args.file:
         p.error("file is required unless --list is used")
     doc = run(Path(args.file), args.team, args.tool)
-    if args.out:
-        Path(args.out).write_text(json.dumps(doc, indent=2), encoding="utf-8")
-    else:
-        json.dump(doc, sys.stdout, indent=2)
-        print()
+    output = (prioritize_csv(doc["prioritized"]) if args.prioritize
+              else json.dumps(doc, indent=2) + "\n")
+    _emit(output, args.out)
     bad = any(r.get("count", 1 if r.get("error") else 0) for r in doc["results"])
     return 1 if bad else 0
 

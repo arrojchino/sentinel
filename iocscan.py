@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import ipaddress
 import json
 import re
@@ -28,31 +30,96 @@ def private(value: str) -> bool:
         return False
 
 
-def scan(text: str) -> dict:
+def scan(text: str, expected: int | None = None) -> dict:
     hits = {}
+    raw_matches = 0
     for line_no, line in enumerate(text.splitlines(), 1):
         for kind, pat in PATTERNS.items():
             for value in pat.findall(line):
+                raw_matches += 1
                 value = value.lower()
                 if kind == "ipv4" and private(value):
                     continue
                 hits.setdefault((kind, value), []).append(line_no)
     findings = [{"type": k, "value": v, "lines": sorted(lines)}
                 for (k, v), lines in sorted(hits.items())]
-    return {"schema_version": 1, "count": len(findings), "findings": findings}
+    result = {"schema_version": 1, "count": len(findings), "findings": findings}
+    # A source may state how many observables it produced. Parsing fewer than
+    # that is truncated evidence, not a clean result: a partial capture must
+    # never be reported as "no observables of interest". Raw pattern hits are
+    # counted before private suppression and dedup, so those transformations
+    # cannot be mistaken for a short export. Pending is never clean.
+    if expected is not None:
+        incomplete = raw_matches < expected
+        result["expected"] = expected
+        result["raw_matches"] = raw_matches
+        result["status"] = "incomplete" if incomplete else "complete"
+        if incomplete:
+            result["reason"] = (
+                f"parsed {raw_matches} observable(s) of claimed {expected}; "
+                "truncated evidence is never clean")
+    return result
+
+
+def prioritize_csv(findings: list) -> str:
+    """Render typed observables as a triage CSV.
+
+    Column contract: type, value, line -- one row per (type, value, line)
+    occurrence. Findings arrive sorted by (type, value) and their ``lines``
+    sorted ascending, so the rows are deterministic. Emitting one row per line
+    preserves where each observable appeared after deduplication. An LF
+    terminator and a trailing newline keep the bytes stable, so a committed
+    triage CSV changes only when the observables change, not with the host.
+    """
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(("type", "value", "line"))
+    for finding in findings:
+        for line in finding["lines"]:
+            writer.writerow((finding["type"], finding["value"], line))
+    return buf.getvalue()
+
+
+def _emit(output: str, out: str | None) -> None:
+    """Write output as exact UTF-8 bytes, with no platform newline translation."""
+    data = output.encode("utf-8")
+    if out:
+        Path(out).write_bytes(data)
+        return
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is None:
+        sys.stdout.write(output)  # captured stdout (e.g. StringIO) has no buffer
+    else:
+        buffer.write(data)
 
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="IOC normalizer with private-range suppression")
     p.add_argument("file")
     p.add_argument("--out")
+    p.add_argument("--expect", type=int, default=None,
+                   help="observables the source claims; a shorter parse is incomplete (exit 2)")
+    p.add_argument("--prioritize", action="store_true",
+                   help="emit only the typed observables as triage CSV (type,value,line)")
     args = p.parse_args(argv)
-    result = scan(Path(args.file).read_text(encoding="utf-8", errors="replace"))
-    text = json.dumps(result, indent=2)
-    if args.out:
-        Path(args.out).write_text(text, encoding="utf-8")
+    if args.expect is not None and args.expect < 0:
+        result = {"schema_version": 1, "count": 0, "findings": [],
+                  "expected": args.expect, "status": "incomplete",
+                  "reason": "--expect must be a non-negative integer"}
     else:
-        print(text)
+        try:
+            text = Path(args.file).read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            result = {"schema_version": 1, "count": 0, "findings": [],
+                      "status": "incomplete",
+                      "reason": f"input error: {type(e).__name__}: {str(e)[:160]}"}
+        else:
+            result = scan(text, expected=args.expect)
+    output = (prioritize_csv(result["findings"]) if args.prioritize
+              else json.dumps(result, indent=2) + "\n")
+    _emit(output, args.out)
+    if result.get("status") == "incomplete":
+        return 2
     return 1 if result["count"] else 0
 
 

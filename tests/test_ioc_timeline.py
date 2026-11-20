@@ -322,5 +322,146 @@ class TimelineSourceManifestTests(unittest.TestCase):
             self.assertEqual(len(rows), 2)  # header + one session, no provenance rows
 
 
+class IocChecksTests(unittest.TestCase):
+    FIXTURE = "8.8.8.8 example.com\n"
+
+    def test_closed_vocabulary_and_fixed_order(self):
+        result = ioc.scan(self.FIXTURE)
+        result["source_files"] = [
+            ioc.source_manifest("capture.txt", self.FIXTURE.encode("utf-8"))]
+        rows = ioc.checks(result)
+        self.assertEqual([r["check"] for r in rows],
+                         ["parse", "completeness", "provenance"])
+        for row in rows:
+            self.assertIn(row["status"], ioc.CHECK_STATUSES)
+        self.assertEqual(rows[1]["status"], "skipped")
+        self.assertEqual(rows[1]["detail"], "no claimed total")
+        self.assertEqual(rows[0]["detail"], "2 observables")
+
+    def test_csv_column_contract_and_deterministic_bytes(self):
+        result = ioc.scan(self.FIXTURE)
+        result["source_files"] = [
+            ioc.source_manifest("capture.txt", self.FIXTURE.encode("utf-8"))]
+        text = ioc.checks_csv(ioc.checks(result))
+        self.assertTrue(text.startswith("check,status,detail\n"))
+        self.assertNotIn("\r", text)
+        self.assertTrue(text.endswith("\n"))
+        self.assertEqual(text, ioc.checks_csv(ioc.checks(result)))
+
+    def test_cli_checks_exit_parse_and_provenance(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "capture.txt"
+            src.write_text(self.FIXTURE, encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = ioc.main([str(src), "--checks"])
+            raw = buf.getvalue()
+            self.assertEqual(code, 1)
+            self.assertNotIn("\r", raw)
+            rows = list(csv.reader(io.StringIO(raw)))
+            self.assertEqual(rows[0], ["check", "status", "detail"])
+            by_check = {r[0]: r for r in rows[1:]}
+            self.assertEqual(by_check["parse"][1], "confirmed")
+            self.assertEqual(by_check["parse"][2], "2 observables")
+            self.assertEqual(by_check["completeness"][1], "skipped")
+            self.assertEqual(by_check["completeness"][2], "no claimed total")
+            self.assertEqual(by_check["provenance"][1], "confirmed")
+            self.assertEqual(by_check["provenance"][2],
+                             hashlib.sha256(src.read_bytes()).hexdigest())
+
+    def test_short_parse_marks_completeness_not_confirmed(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "capture.txt"
+            src.write_text(self.FIXTURE, encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = ioc.main([str(src), "--checks", "--expect", "9"])
+            self.assertEqual(code, 2)
+            rows = list(csv.reader(io.StringIO(buf.getvalue())))
+            by_check = {r[0]: r for r in rows[1:]}
+            self.assertEqual(by_check["parse"][1], "confirmed")
+            self.assertEqual(by_check["completeness"][1], "not_confirmed")
+            self.assertEqual(by_check["completeness"][2], "parsed 2 of 9")
+
+    def test_input_error_has_no_confirmed_checks(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = ioc.main(["does-not-exist.txt", "--checks"])
+        self.assertEqual(code, 2)
+        rows = list(csv.reader(io.StringIO(buf.getvalue())))
+        self.assertEqual(rows[0], ["check", "status", "detail"])
+        by_check = {r[0]: r for r in rows[1:]}
+        self.assertEqual(by_check["parse"][1], "not_confirmed")
+        self.assertEqual(by_check["provenance"][1], "skipped")
+        self.assertEqual(by_check["provenance"][2], "no readable input")
+
+
+class TimelineChecksTests(unittest.TestCase):
+    FIXTURE = (
+        '{"timestamp": "2026-01-01T08:00:00", "source": "clean"}\n'
+        '{"timestamp": "2026-01-01T08:00:30", "source": "clean"}\n'
+        '{"timestamp": "2026-01-01T10:00:00", "source": "long"}\n'
+        '{"timestamp": "2026-01-01T12:00:00", "source": "long"}\n'
+    )
+
+    def test_closed_vocabulary_and_fixed_order(self):
+        result = tl.sessions(
+            [json.loads(line) for line in self.FIXTURE.splitlines()], 9000, 3600)
+        result["source_files"] = [
+            tl.source_manifest("alerts.jsonl", self.FIXTURE.encode("utf-8"))]
+        rows = tl.checks(result)
+        self.assertEqual([r["check"] for r in rows], ["parse", "dwell", "provenance"])
+        for row in rows:
+            self.assertIn(row["status"], tl.CHECK_STATUSES)
+            self.assertEqual(set(row), {"check", "status", "detail"})
+
+    def test_confirmed_zero_dwell_is_not_a_no_risk_claim(self):
+        result = tl.sessions([], 900, 3600)
+        result["source_files"] = [
+            tl.source_manifest("alerts.jsonl", self.FIXTURE.encode("utf-8"))]
+        dwell = tl.checks(result)[1]
+        self.assertEqual(dwell["status"], "confirmed")
+        self.assertEqual(dwell["detail"], "0 long dwell(s)")
+
+    def test_unreadable_result_marks_parse_not_confirmed(self):
+        rows = tl.checks({})
+        by_check = {r["check"]: r for r in rows}
+        self.assertEqual(by_check["parse"]["status"], "not_confirmed")
+        self.assertEqual(by_check["provenance"]["status"], "skipped")
+        self.assertEqual(by_check["provenance"]["detail"], "no readable input")
+
+    def test_csv_column_contract_and_deterministic_bytes(self):
+        result = tl.sessions(
+            [json.loads(line) for line in self.FIXTURE.splitlines()], 9000, 3600)
+        result["source_files"] = [
+            tl.source_manifest("alerts.jsonl", self.FIXTURE.encode("utf-8"))]
+        text = tl.checks_csv(tl.checks(result))
+        self.assertTrue(text.startswith("check,status,detail\n"))
+        self.assertNotIn("\r", text)
+        self.assertTrue(text.endswith("\n"))
+        self.assertEqual(text, tl.checks_csv(tl.checks(result)))
+
+    def test_cli_checks_exit_parse_and_provenance(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "alerts.jsonl"
+            src.write_text(self.FIXTURE, encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = tl.main([str(src), "--gap", "9000", "--checks"])
+            raw = buf.getvalue()
+            self.assertEqual(code, 1)
+            self.assertNotIn("\r", raw)
+            rows = list(csv.reader(io.StringIO(raw)))
+            self.assertEqual(rows[0], ["check", "status", "detail"])
+            by_check = {r[0]: r for r in rows[1:]}
+            self.assertEqual(by_check["parse"][1], "confirmed")
+            self.assertEqual(by_check["parse"][2], "2 sessions")
+            self.assertEqual(by_check["dwell"][1], "confirmed")
+            self.assertEqual(by_check["dwell"][2], "1 long dwell(s)")
+            self.assertEqual(by_check["provenance"][1], "confirmed")
+            self.assertEqual(by_check["provenance"][2],
+                             hashlib.sha256(src.read_bytes()).hexdigest())
+
+
 if __name__ == "__main__":
     unittest.main()

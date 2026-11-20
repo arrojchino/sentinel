@@ -302,6 +302,23 @@ A local identity-timeline tool keeps a source-files worksheet beside the review 
 
 The hash is computed from the single byte read used for parsing, so it always describes the bytes that produced the sessions. The source is opened read-only, and grouping never adds a maliciousness verdict: a long dwell stays a review flag, not a finding. Because the manifest is derived from input bytes, an unchanged source produces identical provenance on every run.
 
+### Confirmation worksheet (--checks) across all four tools
+
+An open-source IDS exposes one uniform CLI over a single detection engine: the same front-end verbs inspect events and enforce decisions, and its scenario hub states explicitly which rules were selected. The transferable piece is a consistent command-line contract, not a shared implementation. Every sentinel detection tool now exposes the same `--checks` verb: `sentinel.py`, `releasegate.py`, `iocscan.py` and `timeline.py` each emit a per-check confirmation worksheet on stdout with no JSON envelope and no prose, and each adds the same array to its JSON report.
+
+```
+python iocscan.py capture.txt --checks > checks.csv
+python timeline.py alerts.jsonl --gap 900 --checks > checks.csv
+```
+
+The normalizer and timeline use the `check,status,detail` shape already defined by `releasegate.py` (the tool-oriented `sentinel.py` worksheet stays `tool,status,findings`). `status` is always from the same closed vocabulary:
+
+- `confirmed` - the check ran and produced a result; a zero count is still confirmed and means nothing was detected by that check, not that no risk exists.
+- `not_confirmed` - the check's input could not be read or trusted; never clean, and it cannot be confused with a confirmed zero.
+- `skipped` - the check did not apply; `detail` records why, so an absent check is never silently dropped.
+
+`iocscan.py` reports `parse`, `completeness` and `provenance`: an unreadable capture marks `parse` `not_confirmed` and `provenance` `skipped`, a short `--expect` parse marks `completeness` `not_confirmed`, and no claimed total marks it `skipped`. `timeline.py` reports `parse`, `dwell` and `provenance`, with the long-dwell count stated even when it is zero. `--prioritize` takes precedence over `--checks` when both are given, exit status is unchanged (`0`/`1`/`2`) and still gates on findings, and the `--prioritize` CSV stays observables-only or session-summaries-only with no check rows. Output is UTF-8 with LF endings and a trailing newline, so a committed worksheet changes only when the checks change.
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push and pull request. It executes the

@@ -84,6 +84,71 @@ def source_manifest(path: str | Path, data: bytes | None = None) -> dict:
     }
 
 
+# Closed per-check confirmation vocabulary shared by the sentinel tools.
+#   confirmed    - the check ran and produced a result (possibly zero findings)
+#   not_confirmed - its input could not be read or trusted (never clean)
+#   skipped      - it did not apply to this scan
+# A confirmed zero means "nothing detected by this check", not "no risk".
+CHECK_STATUSES = ("confirmed", "not_confirmed", "skipped")
+
+
+def _check(name: str, status: str, detail: str = "") -> dict:
+    """Build one confirmation row with a closed status and a short detail."""
+    if status not in CHECK_STATUSES:
+        raise ValueError(f"unknown check status: {status}")
+    return {"check": name, "status": status, "detail": detail}
+
+
+def checks(result: dict) -> list:
+    """Return a per-check confirmation worksheet for one scan, in fixed order.
+
+    Every scan reports the same checks so a reader can tell a check that ran
+    (confirmed) from one that did not apply (skipped) or whose input could not
+    be trusted (not_confirmed). A ``source_files`` entry proves the single byte
+    read succeeded, which is what makes ``parse`` confirmed; without it the
+    scan never saw trustworthy bytes. ``detail`` is a short fact: a count for
+    a confirmed check, a reason for a not_confirmed one, and why a check was
+    skipped. The worksheet adds no maliciousness verdict to the observables.
+    """
+    readable = bool(result.get("source_files"))
+    rows = [
+        _check("parse",
+               "confirmed" if readable else "not_confirmed",
+               (f"{result['count']} observables" if readable
+                else result.get("reason", "input unreadable"))),
+    ]
+    if "expected" not in result:
+        rows.append(_check("completeness", "skipped", "no claimed total"))
+    elif result.get("status") == "incomplete":
+        rows.append(_check("completeness", "not_confirmed",
+                           f"parsed {result.get('raw_matches', 0)} of {result['expected']}"))
+    else:
+        rows.append(_check("completeness", "confirmed",
+                           f"{result.get('raw_matches', 0)} of {result['expected']}"))
+    rows.append(
+        _check("provenance", "confirmed" if readable else "skipped",
+               result["source_files"][0]["sha256"] if readable else "no readable input"))
+    return rows
+
+
+def checks_csv(rows: list) -> str:
+    """Render the confirmation worksheet as a byte-stable CSV.
+
+    Column contract: check,status,detail -- one row per check in the fixed
+    order returned by :func:`checks`. ``status`` is from the closed
+    CHECK_STATUSES vocabulary; ``detail`` is a short fact or reason (a skipped
+    check still states why it did not apply). An LF terminator and trailing
+    newline keep the bytes stable across platforms, so a committed worksheet
+    changes only when the checks change.
+    """
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(("check", "status", "detail"))
+    for row in rows:
+        writer.writerow((row["check"], row["status"], row.get("detail", "")))
+    return buf.getvalue()
+
+
 def prioritize_csv(findings: list) -> str:
     """Render typed observables as a triage CSV.
 
@@ -124,6 +189,8 @@ def main(argv=None) -> int:
                    help="observables the source claims; a shorter parse is incomplete (exit 2)")
     p.add_argument("--prioritize", action="store_true",
                    help="emit only the typed observables as triage CSV (type,value,line)")
+    p.add_argument("--checks", action="store_true",
+                   help="emit only the per-check confirmation worksheet as CSV (check,status,detail)")
     args = p.parse_args(argv)
     if args.expect is not None and args.expect < 0:
         result = {"schema_version": 1, "count": 0, "findings": [],
@@ -140,7 +207,9 @@ def main(argv=None) -> int:
             text = data.decode("utf-8", errors="replace")
             result = scan(text, expected=args.expect)
             result["source_files"] = [source_manifest(args.file, data)]
+    result["checks"] = checks(result)
     output = (prioritize_csv(result["findings"]) if args.prioritize
+              else checks_csv(result["checks"]) if args.checks
               else json.dumps(result, indent=2) + "\n")
     _emit(output, args.out)
     if result.get("status") == "incomplete":

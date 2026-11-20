@@ -90,6 +90,61 @@ def source_manifest(path: str | Path, data: bytes | None = None) -> dict:
     }
 
 
+# Closed per-check confirmation vocabulary shared by the sentinel tools.
+#   confirmed    - the check ran and produced a result (possibly zero findings)
+#   not_confirmed - its input could not be read or trusted (never clean)
+#   skipped      - it did not apply to this grouping
+# A confirmed zero means "nothing detected by this check", not "no risk".
+CHECK_STATUSES = ("confirmed", "not_confirmed", "skipped")
+
+
+def _check(name: str, status: str, detail: str = "") -> dict:
+    """Build one confirmation row with a closed status and a short detail."""
+    if status not in CHECK_STATUSES:
+        raise ValueError(f"unknown check status: {status}")
+    return {"check": name, "status": status, "detail": detail}
+
+
+def checks(result: dict) -> list:
+    """Return a per-check confirmation worksheet for one timeline, in order.
+
+    The three checks mirror iocscan.py and releasegate.py so every sentinel
+    tool exposes one evidence-confirmation contract: a check that ran is
+    confirmed, one whose bytes were never read is not_confirmed, and one that
+    did not apply is skipped. A readable input (``source_files``) is what
+    makes ``parse`` confirmed. ``detail`` is a short fact: a count for a
+    confirmed check and why a check was skipped. Grouping adds no verdict: a
+    confirmed zero long-dwell sessions is not a claim that no risk exists.
+    """
+    readable = bool(result.get("source_files"))
+    long_dwells = sum(1 for g in result.get("groups", []) if g.get("long_dwell"))
+    return [
+        _check("parse", "confirmed" if readable else "not_confirmed",
+               f"{result.get('sessions', 0)} sessions" if readable
+               else "input unreadable"),
+        _check("dwell", "confirmed", f"{long_dwells} long dwell(s)"),
+        _check("provenance", "confirmed" if readable else "skipped",
+               result["source_files"][0]["sha256"] if readable else "no readable input"),
+    ]
+
+
+def checks_csv(rows: list) -> str:
+    """Render the confirmation worksheet as a byte-stable CSV.
+
+    Column contract: check,status,detail -- one row per check in the fixed
+    order returned by :func:`checks`. ``status`` is from the closed
+    CHECK_STATUSES vocabulary; ``detail`` is a short fact or reason (a skipped
+    check still states why it did not apply). An LF terminator and trailing
+    newline keep the bytes stable across platforms.
+    """
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(("check", "status", "detail"))
+    for row in rows:
+        writer.writerow((row["check"], row["status"], row.get("detail", "")))
+    return buf.getvalue()
+
+
 def _emit(output: str, out: str | None) -> None:
     """Write output as exact UTF-8 bytes, with no platform newline translation."""
     data = output.encode("utf-8")
@@ -111,13 +166,17 @@ def main(argv=None) -> int:
     p.add_argument("--out", help="write output to a file instead of stdout")
     p.add_argument("--prioritize", action="store_true",
                    help="emit only session summaries as review CSV (session,source,event_count,long_dwell)")
+    p.add_argument("--checks", action="store_true",
+                   help="emit only the per-check confirmation worksheet as CSV (check,status,detail)")
     args = p.parse_args(argv)
     data = Path(args.file).read_bytes()
     text = data.decode("utf-8", errors="replace")
     rows = [json.loads(line) for line in text.splitlines() if line.strip()]
     result = sessions(rows, args.gap, args.max_span)
     result["source_files"] = [source_manifest(args.file, data)]
+    result["checks"] = checks(result)
     output = (prioritize_csv(result) if args.prioritize
+              else checks_csv(result["checks"]) if args.checks
               else json.dumps(result, indent=2) + "\n")
     _emit(output, args.out)
     return 1 if any(g["long_dwell"] for g in result["groups"]) else 0

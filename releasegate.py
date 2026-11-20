@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import io
 import json
 import sys
@@ -121,15 +122,20 @@ def build_severity_map(extra=None):
     return result
 
 
-def load_findings(path: Path):
+def load_findings(path: Path, raw: bytes | None = None):
     """Return ``(findings, claimed_total)``.
 
     ``claimed_total`` comes from an envelope's ``reported_total`` key: the count
     the upstream scanner says it produced. It is None for a plain array or when
     the source does not state a count. A malformed claim is an input error so a
     broken count cannot be silently ignored.
+
+    When ``raw`` is supplied, decode it instead of reading ``path`` again, so a
+    caller can hash exactly the bytes that were parsed without a second read.
     """
-    data = json.loads(path.read_text(encoding="utf-8"))
+    if raw is None:
+        raw = path.read_bytes()
+    data = json.loads(raw.decode("utf-8"))
     if isinstance(data, list):
         return data, None
     if isinstance(data, dict) and isinstance(data.get("findings"), list):
@@ -139,6 +145,32 @@ def load_findings(path: Path):
                 raise ValueError("'reported_total' must be a non-negative integer")
         return data["findings"], claimed
     raise ValueError("expected a JSON array or an object with findings[]")
+
+
+def source_manifest(path: str | Path, data: bytes | None = None) -> dict:
+    """Record provenance for the exact bytes a decision was built from.
+
+    Mirrors the source-files worksheet shared by ``timeline.py`` and
+    ``iocscan.py``: name, byte size, non-blank line count and SHA-256 let a
+    reviewer tie a verdict back to the input it read. The source is opened
+    read-only; nothing is rewritten or decorated with a verdict. When ``data``
+    is supplied, the caller's single read is reused, so the hash always covers
+    the same bytes that were parsed.
+
+    The hash establishes consistency between a decision and its bytes - not
+    authenticity, completeness or causation. An unreadable file has no
+    manifest, and scoring never adds a maliciousness verdict to the source.
+    """
+    p = Path(path)
+    if data is None:
+        data = p.read_bytes()
+    text = data.decode("utf-8", errors="replace")
+    return {
+        "name": p.name,
+        "bytes": len(data),
+        "lines": sum(1 for line in text.splitlines() if line.strip()),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
 
 
 def decide(findings: list[dict], limits: dict,
@@ -262,16 +294,23 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
     limits = dict(DEFAULTS)
     severity_map = dict(CANONICAL)
+    raw = None
     try:
+        raw = Path(args.file).read_bytes()
         if args.rules:
             rules = json.loads(Path(args.rules).read_text(encoding="utf-8"))
             severity_map = build_severity_map(rules.pop("severities", None))
             limits.update(rules)
-        findings, claimed_total = load_findings(Path(args.file))
+        findings, claimed_total = load_findings(Path(args.file), raw)
     except (OSError, ValueError) as e:
         result = indeterminate(f"input error: {type(e).__name__}: {str(e)[:160]}", limits)
     else:
         result = decide(findings, limits, severity_map, claimed_total)
+    # Provenance describes the exact bytes that were read for parsing. An
+    # unreadable file leaves raw None, so no manifest is attached - the gate
+    # cannot tie a verdict to bytes it never saw.
+    if raw is not None:
+        result["source_files"] = [source_manifest(args.file, raw)]
     output = (prioritize_csv(result["prioritized"]) if args.prioritize
               else json.dumps(result, indent=2) + "\n")
     _emit(output, args.out)

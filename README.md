@@ -175,6 +175,17 @@ Columns, in order:
 
 Rows keep the decision's deterministic order, so the first data row is the first finding to fix. An indeterminate decision emits the header only: evidence that could not be evaluated yields no ranked work items. Output is UTF-8 with LF endings and a trailing newline, so a committed triage CSV changes only when the findings change and never produces a platform-newline diff. `--out` writes the same bytes to a file instead of stdout. The exit status (`0`/`1`/`2`) is unchanged and still gates on findings, so a caller can branch on the verdict while handing the CSV to a reviewer.
 
+### Source provenance
+
+A YAML prompt-injection scoring format states the limit of a checksum plainly: a hash establishes consistency, not authenticity, completeness or causation. `releasegate.py` applies that framing to its decision. The JSON report carries a `source_files` array with one entry for the findings file that was parsed, using the same shape as `timeline.py` and `iocscan.py` so all three tools share one provenance contract:
+
+- `name` - the findings file's basename.
+- `bytes` - the exact byte size read from disk.
+- `lines` - the count of non-blank UTF-8 lines in those bytes.
+- `sha256` - the SHA-256 of the exact bytes that were parsed.
+
+The hash is computed from the single byte read that feeds the parser, so it always describes the bytes that produced the verdict; the file is opened read-only and never modified. Provenance is attached whenever the findings file was readable, including an indeterminate decision from unparsable or out-of-vocabulary evidence, because those bytes were still seen. An unreadable file yields no `source_files` entry at all and is a fail-closed exit `2`: the gate cannot tie a verdict to bytes it never read. The manifest establishes that a decision is consistent with a specific copy of the input; it does not prove that copy is genuine or complete, and scoring adds no maliciousness verdict to the source. `--prioritize` output is unchanged - the CSV remains the ranked findings only, with no provenance rows.
+
 ## IOC and timeline
 
 `iocscan.py` extracts typed observables (IPv4, domain, MD5/SHA-1/SHA-256), suppresses private and reserved ranges, dedupes by value and reports source lines. `timeline.py` groups timestamped events into sessions by source with a configurable gap and flags long dwell.

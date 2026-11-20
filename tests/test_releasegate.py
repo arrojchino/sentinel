@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import io
 import json
 import subprocess
@@ -336,6 +337,68 @@ class TriageCsvTests(unittest.TestCase):
             self.assertEqual(written.returncode, base.returncode)
             self.assertEqual(written.stdout, b"")
             self.assertEqual(out.read_bytes(), base.stdout)
+
+
+class SourceProvenanceTests(unittest.TestCase):
+    def test_manifest_shape_and_independent_hash(self):
+        raw = b'{"findings": []}\n'
+        m = g.source_manifest("findings.json", raw)
+        self.assertEqual(set(m), {"name", "bytes", "lines", "sha256"})
+        self.assertEqual(m["name"], "findings.json")
+        self.assertEqual(m["bytes"], len(raw))
+        self.assertEqual(m["lines"], 1)
+        self.assertEqual(m["sha256"], hashlib.sha256(raw).hexdigest())
+
+    def test_cli_report_carries_matching_provenance(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "findings.json"
+            raw = json.dumps([{"severity": "critical"}]).encode("utf-8")
+            f.write_bytes(raw)
+            r = subprocess.run([sys.executable, str(Path(g.__file__).resolve()),
+                                str(f)], capture_output=True)
+            self.assertEqual(r.returncode, 1)
+            out = json.loads(r.stdout)
+            sf = out["source_files"]
+            self.assertEqual(len(sf), 1)
+            self.assertEqual(sf[0]["name"], "findings.json")
+            self.assertEqual(sf[0]["bytes"], len(raw))
+            self.assertEqual(sf[0]["sha256"], hashlib.sha256(raw).hexdigest())
+            self.assertEqual(r.stderr, b"")
+            self.assertNotIn(b"\r", r.stdout)
+
+    def test_unreadable_file_has_no_provenance(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = subprocess.run([sys.executable, str(Path(g.__file__).resolve()),
+                                str(Path(d) / "missing.json")], capture_output=True)
+            self.assertEqual(r.returncode, 2)
+            out = json.loads(r.stdout)
+            self.assertEqual(out["verdict"], "indeterminate")
+            self.assertNotIn("source_files", out)
+
+    def test_source_bytes_are_not_modified(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "findings.json"
+            raw = b'[{"severity": "low"}]'
+            f.write_bytes(raw)
+            r = subprocess.run([sys.executable, str(Path(g.__file__).resolve()),
+                                str(f)], capture_output=True)
+            self.assertEqual(r.returncode, 0)
+            self.assertEqual(f.read_bytes(), raw)
+            self.assertEqual(json.loads(r.stdout)["source_files"][0]["sha256"],
+                             hashlib.sha256(raw).hexdigest())
+
+    def test_prioritize_output_unchanged_by_provenance(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "findings.json"
+            f.write_bytes(json.dumps([{"severity": "critical"}]).encode("utf-8"))
+            r = subprocess.run([sys.executable, str(Path(g.__file__).resolve()),
+                                str(f), "--prioritize"], capture_output=True)
+            self.assertEqual(r.returncode, 1)
+            rows = list(csv.reader(io.StringIO(r.stdout.decode("utf-8"))))
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0], ["index", "severity", "declared_bucket",
+                                       "bucket", "cvss"])
+            self.assertNotIn(b"source_files", r.stdout)
 
 
 if __name__ == "__main__":

@@ -457,6 +457,33 @@ unit tests, then probes the gate twice: `headerscheck` on `sample.txt` must exit
 (complete header set). Both probes also assert that the JSON envelope is
 parseable.
 
+### One front-end for all selftests (ci/selftest_all.py)
+
+A large toolkit documents one canonical command per task instead of restating
+the same procedure for every audience, and its aggregate entry points invoke
+each component through the interface that component already exposes. Sentinel
+applies that shape to its ground-truth checks: `ci/selftest_all.py` is the single
+command that runs every `--selftest`, and it does so by invoking each tool
+exactly as CI does rather than duplicating a comparison in a second place.
+
+```bash
+python ci/selftest_all.py            # exit 0 pass, 1 any fail, 2 any error
+python ci/selftest_all.py --list     # the five tools this covers
+python ci/selftest_all.py --dir DIR  # run against another checkout/copy
+```
+
+The envelope carries `mode` (`selftest_all`), `status`, one row per tool
+(`tool`, `status`, `exit_code`, `checks`, `bytes`, `detail`) and a `counts`
+object. The overall status is the worst per-tool status: `error` outranks `fail`,
+which outranks `pass`, and the exit code mirrors it (`0`/`1`/`2`). The runner
+inherits the tools' status vocabulary and also flags an internal disagreement as
+`error`: a tool reporting `pass` with a non-zero exit, a missing `selftest` mode
+marker, output that is not JSON, an unknown status, or a missing script. It
+never turns an unreadable or absent tool into a pass. Only basenames are
+reported, and stdout is exact UTF-8 bytes with LF endings and a fixed key order,
+so two runs of the same checkout are byte-identical. This is an aggregate
+regression view over committed fixtures, not a risk verdict about any input.
+
 ## Limits
 
 Each check reports what its rules can see in the supplied file. A clean result is not proof of safety, and a finding is not a verdict. The bridge reads the alerts log file, not the Wazuh API.

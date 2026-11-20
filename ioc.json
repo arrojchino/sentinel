@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "count": 3,
+  "findings": [
+    {
+      "type": "domain",
+      "value": "example.com",
+      "lines": [
+        2
+      ]
+    },
+    {
+      "type": "ipv4",
+      "value": "8.8.8.8",
+      "lines": [
+        1,
+        2
+      ]
+    },
+    {
+      "type": "sha256",
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "lines": [
+        3
+      ]
+    }
+  ]
+}

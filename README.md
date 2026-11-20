@@ -191,6 +191,22 @@ python timeline.py alerts.jsonl --gap 900 --max-span 3600
 python iocscan.py partial.txt --expect 500; echo $?   # 2
 ```
 
+### Triage handoff (--prioritize)
+
+Like the findings tracker's compact "Needs action" view, `iocscan.py --prioritize` gives consumers a machine-readable list of observables to pivot on, with a documented schema and no JSON envelope or prose. stdout carries only the typed observables as CSV:
+
+```bash
+python iocscan.py capture.txt --prioritize > observables.csv
+```
+
+Columns, in order:
+
+- `type` - observable type (`ipv4`, `domain`, `md5`, `sha1`, `sha256`).
+- `value` - the normalized (lowercased) observable; private and reserved ranges are suppressed.
+- `line` - the 1-based source line where that occurrence appeared.
+
+One row is emitted per (type, value, line) occurrence, so an observable seen on several lines keeps every location even after deduplication. Rows follow the deterministic (type, value, then line) order used by the JSON findings. Output is UTF-8 with LF endings and a trailing newline, so a committed triage CSV changes only when the observables change and never produces a platform-newline diff. `--out` writes the same bytes to a file instead of stdout. The exit status (`0`/`1`/`2`) is unchanged: `1` with findings, `0` without, and `2` for an incomplete parse or an input error, so a caller can still gate on evidence quality while handing the CSV to a reviewer.
+
 ## Limits
 
 Each check reports what its rules can see in the supplied file. A clean result is not proof of safety, and a finding is not a verdict. The bridge reads the alerts log file, not the Wazuh API.

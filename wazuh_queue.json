@@ -1,0 +1,20 @@
+{
+  "generated_at": "2026-11-18T14:54:26-06:00",
+  "alerts_read": 150,
+  "threshold": 6,
+  "groups": 2,
+  "queue": [
+    {
+      "agent": "PRO-VDH-MAX",
+      "srcip": "-",
+      "count": 20,
+      "max_level": 7,
+      "first": "2026-11-18T14:53:48.523-0600",
+      "last": "2026-11-18T14:53:53.511-0600",
+      "rules": [
+        "File added to the system.",
+        "File deleted."
+      ]
+    }
+  ]
+}

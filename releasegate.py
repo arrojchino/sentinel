@@ -343,6 +343,114 @@ def checks_csv(rows: list) -> str:
     return buf.getvalue()
 
 
+# Ground-truth selftest statuses are deliberately distinct from CHECK_STATUSES:
+# a selftest answers "does the gate still match its known answer", not "did this
+# input confirm a check".
+SELFTEST_STATUSES = ("pass", "fail", "error", "skipped")
+
+
+def _selftest_check(name: str, status: str, detail: str = "") -> dict:
+    if status not in SELFTEST_STATUSES:
+        raise ValueError(f"unknown selftest status: {status}")
+    return {"check": name, "status": status, "detail": detail}
+
+
+def selftest(base: str | Path | None = None) -> dict:
+    """Validate the gate against a committed ground-truth fixture.
+
+    The study target ships a deliberately vulnerable application together with
+    its published scan results, so a detector can be checked against a fixed
+    answer. This gate ships the same shape: ``releasegate_fixture.json`` is a
+    known findings input and ``releasegate_expect.json`` records the limits,
+    canonical buckets, effective buckets and verdict it must produce. The check
+    compares the gate's current decision to that answer and reports a coverage
+    regression, not a risk verdict. ``status`` is pass (every expectation met),
+    fail (a regression, including hash drift) or error (an input could not be
+    read, which is fail-closed and never counted as a pass).
+    """
+    base = Path(base) if base is not None else Path(__file__).resolve().parent
+    fixture = base / "releasegate_fixture.json"
+    expect_path = base / "releasegate_expect.json"
+    checks: list = []
+    try:
+        data = fixture.read_bytes()
+    except OSError as e:
+        checks.append(_selftest_check("fixture", "error",
+                                      f"unreadable: {type(e).__name__}"))
+        return {"schema_version": 1, "mode": "selftest", "status": "error",
+                "fixture": fixture.name, "checks": checks}
+    checks.append(_selftest_check("fixture", "pass", f"{len(data)} bytes"))
+    try:
+        expectation = json.loads(expect_path.read_text(encoding="utf-8"))
+        if not isinstance(expectation, dict):
+            raise ValueError("expectation must be a JSON object")
+    except (OSError, ValueError) as e:
+        checks.append(_selftest_check("expectation", "error",
+                                      f"unreadable: {type(e).__name__}"))
+        return {"schema_version": 1, "mode": "selftest", "status": "error",
+                "fixture": fixture.name, "checks": checks}
+    checks.append(_selftest_check("expectation", "pass", "ground truth loaded"))
+
+    actual_hash = hashlib.sha256(data).hexdigest()
+    pinned = expectation.get("fixture_sha256")
+    if pinned:
+        matched = pinned == actual_hash
+        checks.append(_selftest_check(
+            "fixture_hash", "pass" if matched else "fail",
+            "bytes match the pinned answer" if matched
+            else f"drift: expected {pinned}, got {actual_hash}"))
+    else:
+        checks.append(_selftest_check("fixture_hash", "skipped", "no pinned hash"))
+
+    try:
+        limits = dict(DEFAULTS)
+        limits.update(expectation.get("limits", {}))
+        severity_map = build_severity_map(expectation.get("severities"))
+        findings, claimed_total = load_findings(fixture, data)
+        decision = decide(findings, limits, severity_map, claimed_total)
+    except (OSError, ValueError) as e:
+        checks.append(_selftest_check("score", "error",
+                                      f"{type(e).__name__}: {str(e)[:120]}"))
+        return {"schema_version": 1, "mode": "selftest", "status": "error",
+                "fixture": fixture.name, "fixture_sha256": actual_hash,
+                "checks": checks}
+    checks.append(_selftest_check("score", "pass",
+                                  f"verdict={decision['verdict']}"))
+
+    # Compare the decision's canonical view to the pinned answer exactly. These
+    # fields are the gate's scoreable output; prose reasons and the per-check
+    # worksheet are deliberately outside the contract because a selftest
+    # answers coverage, not explanation.
+    comparisons = (
+        ("verdict", decision["verdict"], expectation.get("verdict")),
+        ("total", decision["total"], expectation.get("total")),
+        ("buckets", decision["buckets"], expectation.get("buckets")),
+        ("effective_buckets", decision["effective_buckets"],
+         expectation.get("effective_buckets")),
+    )
+    for name, actual, expected in comparisons:
+        ok = actual == expected
+        checks.append(_selftest_check(
+            name, "pass" if ok else "fail",
+            "match" if ok else f"expected {expected!r}, got {actual!r}"))
+
+    if any(c["status"] == "error" for c in checks):
+        status = "error"
+    elif any(c["status"] == "fail" for c in checks):
+        status = "fail"
+    else:
+        status = "pass"
+    return {
+        "schema_version": 1,
+        "mode": "selftest",
+        "status": status,
+        "fixture": fixture.name,
+        "fixture_sha256": actual_hash,
+        "verdict": decision["verdict"],
+        "checks": checks,
+    }
+
+
 def _emit(output: str, out: str | None) -> None:
     """Write output as exact UTF-8 bytes, with no platform newline translation."""
     data = output.encode("utf-8")
@@ -358,14 +466,22 @@ def _emit(output: str, out: str | None) -> None:
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Release gate from findings to verdict")
-    p.add_argument("file", help="findings JSON file")
+    p.add_argument("file", nargs="?", help="findings JSON file")
     p.add_argument("--rules", help="optional JSON with thresholds and a 'severities' map")
+    p.add_argument("--selftest", action="store_true",
+                   help="validate the gate against the committed ground-truth fixture (exit 0/1/2)")
     p.add_argument("--prioritize", action="store_true",
                    help="emit only the prioritized 'where to start' list as triage CSV")
     p.add_argument("--out", help="write the output to a file instead of stdout")
     p.add_argument("--checks", action="store_true",
                    help="emit only the per-check confirmation worksheet as CSV (check,status,detail)")
     args = p.parse_args(argv)
+    if args.selftest:
+        st = selftest(Path(__file__).resolve().parent)
+        _emit(json.dumps(st, indent=2) + "\n", args.out)
+        return {"pass": 0, "fail": 1, "error": 2}[st["status"]]
+    if args.file is None:
+        p.error("file is required unless --selftest is given")
     limits = dict(DEFAULTS)
     severity_map = dict(CANONICAL)
     raw = None

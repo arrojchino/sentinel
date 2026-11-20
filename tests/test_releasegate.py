@@ -497,5 +497,88 @@ class ConfirmationWorksheetTests(unittest.TestCase):
             self.assertTrue(r.stdout.decode("utf-8").startswith("index,severity,"))
 
 
+class ReleasegateSelftestTests(unittest.TestCase):
+    def setUp(self):
+        self.base = Path(g.__file__).resolve().parent
+
+    def _copy_ground_truth(self, d):
+        (Path(d) / "releasegate_expect.json").write_bytes(
+            (self.base / "releasegate_expect.json").read_bytes())
+
+    def test_committed_fixture_matches_ground_truth(self):
+        st = g.selftest(self.base)
+        self.assertEqual(st["status"], "pass")
+        self.assertEqual(st["mode"], "selftest")
+        self.assertEqual(st["verdict"], "deny")
+        by_check = {c["check"]: c for c in st["checks"]}
+        self.assertEqual(set(by_check),
+                         {"fixture", "expectation", "fixture_hash", "score",
+                          "verdict", "total", "buckets", "effective_buckets"})
+        for check in by_check.values():
+            self.assertEqual(check["status"], "pass")
+            self.assertEqual(set(check), {"check", "status", "detail"})
+        self.assertEqual(st["fixture_sha256"],
+                         hashlib.sha256(
+                             (self.base / "releasegate_fixture.json").read_bytes()
+                         ).hexdigest())
+
+    def test_regression_is_fail_not_clean(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._copy_ground_truth(d)
+            # Remove the CVSS upgrade so effective buckets drift from the answer.
+            (Path(d) / "releasegate_fixture.json").write_text(
+                json.dumps([{"severity": "critical"}, {"severity": "High"},
+                            {"severity": "low"}, {"severity": "info"}]),
+                encoding="utf-8")
+            st = g.selftest(d)
+            self.assertEqual(st["status"], "fail")
+            by_check = {c["check"]: c for c in st["checks"]}
+            self.assertEqual(by_check["effective_buckets"]["status"], "fail")
+            self.assertIn("expected", by_check["effective_buckets"]["detail"])
+
+    def test_hash_drift_is_fail_even_when_decision_matches(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._copy_ground_truth(d)
+            original = (self.base / "releasegate_fixture.json").read_bytes()
+            (Path(d) / "releasegate_fixture.json").write_bytes(original + b"\n")
+            st = g.selftest(d)
+            self.assertEqual(st["status"], "fail")
+            by_check = {c["check"]: c for c in st["checks"]}
+            self.assertEqual(by_check["fixture_hash"]["status"], "fail")
+            self.assertIn("drift", by_check["fixture_hash"]["detail"])
+            self.assertEqual(by_check["verdict"]["status"], "pass")
+            self.assertEqual(by_check["total"]["status"], "pass")
+
+    def test_unreadable_fixture_is_error_not_pass(self):
+        with tempfile.TemporaryDirectory() as d:
+            st = g.selftest(d)
+            self.assertEqual(st["status"], "error")
+            self.assertEqual(st["checks"], [
+                {"check": "fixture", "status": "error",
+                 "detail": "unreadable: FileNotFoundError"}])
+
+    def test_bad_expectation_is_error_not_pass(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "releasegate_fixture.json").write_bytes(
+                (self.base / "releasegate_fixture.json").read_bytes())
+            (Path(d) / "releasegate_expect.json").write_text(
+                "{not json", encoding="utf-8")
+            st = g.selftest(d)
+            self.assertEqual(st["status"], "error")
+            self.assertEqual(st["checks"][1]["check"], "expectation")
+            self.assertEqual(st["checks"][1]["status"], "error")
+
+    def test_cli_selftest_exit_zero_with_parseable_json(self):
+        proc = subprocess.run(
+            [sys.executable, str(self.base / "releasegate.py"), "--selftest"],
+            capture_output=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
+        self.assertEqual(proc.stderr, b"")
+        self.assertNotIn(b"\r", proc.stdout)
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["status"], "pass")
+        self.assertEqual(payload["verdict"], "deny")
+
+
 if __name__ == "__main__":
     unittest.main()

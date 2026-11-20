@@ -237,6 +237,23 @@ Columns, in order:
 
 An unreadable findings file marks `parse` as `not_confirmed` and leaves every downstream check `skipped`, with exit `2`. A short parse marks `completeness` as `not_confirmed`, an unknown severity marks `severity_vocabulary` as `not_confirmed`, and invalid CVSS marks `cvss_validity` as `not_confirmed`; in each case the thresholds are `skipped` because they were never evaluated. A deny still reports each threshold as `confirmed` with its effective count and limit in `detail`, so `confirmed` means evaluated, not passed. The exit status (`0`/`1`/`2`) is unchanged and still gates on the verdict, and `--prioritize` takes precedence when both flags are supplied. Output is UTF-8 with LF endings and a trailing newline, so a committed worksheet changes only when the decision changes.
 
+### Ground-truth fixture (--selftest)
+
+A deliberately vulnerable sample application ships with its known scan results so a detector can be checked against a fixed answer: the input is intentionally flawed and the published findings are the expected output, not a discovery about a real target. `releasegate.py` applies the same shape with `--selftest`: it scores the committed `releasegate_fixture.json` and compares the result to `releasegate_expect.json`, a ground-truth file recording the limits, canonical buckets, effective buckets and verdict that input must produce.
+
+```bash
+python releasegate.py --selftest            # exit 0 on a match, 1 on regression, 2 on unreadable input
+python releasegate.py --selftest --out selftest.json
+```
+
+The fixture is a small findings array whose low-severity finding carries CVSS 9.8, so a correct gate must upgrade it into the critical bucket and return `deny`. The expectation pins the fixture's SHA-256 (so a byte change is a failure even when the decision is unchanged) and scores the fixture with its own `limits`, independent of `--rules`. The JSON report carries `mode`, `status`, `fixture`, `fixture_sha256`, `verdict` and a `checks` array whose status is a closed vocabulary from `SELFTEST_STATUSES`, deliberately separate from the confirmation statuses above:
+
+- `check` - one of `fixture`, `expectation`, `fixture_hash`, `score`, `verdict`, `total`, `buckets`, `effective_buckets`.
+- `status` - `pass` (expectation met), `fail` (a coverage regression, including hash drift), `error` (an input could not be read, fail-closed and never a pass), or `skipped` (no pinned hash to compare).
+- `detail` - a short fact: a byte count, a match, or an expected-versus-observed difference.
+
+Exit codes mirror the status: `0` for `pass`, `1` for `fail`, `2` for `error`. This is a regression check on the gate's scoring, not a risk verdict about the fixture: the input is known-noise and the answer is a fixed expectation. `--selftest` needs no file argument, takes precedence over the normal flags, and `--out` writes the same JSON to a file.
+
 ## IOC and timeline
 
 `iocscan.py` extracts typed observables (IPv4, domain, MD5/SHA-1/SHA-256), suppresses private and reserved ranges, dedupes by value and reports source lines. `timeline.py` groups timestamped events into sessions by source with a configurable gap and flags long dwell.

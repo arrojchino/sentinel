@@ -1,0 +1,6 @@
+[
+  {"severity": "critical", "file": "a.java", "line": 10},
+  {"severity": "High", "file": "b.java", "line": 20},
+  {"severity": "low", "cvss": 9.8, "file": "c.java", "line": 30},
+  {"severity": "info", "file": "d.java", "line": 40}
+]

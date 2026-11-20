@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "description": "Ground truth for releasegate_fixture.json. A known findings input with the limits, canonical buckets, effective buckets and verdict it must produce, so gate coverage can be validated against a fixed answer without inventing a risk verdict. The low-severity finding carries CVSS 9.8 and must be upgraded into the critical bucket.",
+  "fixture": "releasegate_fixture.json",
+  "fixture_sha256": "d8e0529aab5e43fed0223c7226e9afa9f82fea7bcbcab27a9c8937baf83bf0b9",
+  "limits": {"max_critical": 0, "max_high": 2, "max_total": 20},
+  "verdict": "deny",
+  "total": 4,
+  "buckets": {"critical": 1, "high": 1, "low": 1, "info": 1},
+  "effective_buckets": {"critical": 2, "high": 1, "info": 1}
+}

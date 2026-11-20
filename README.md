@@ -432,3 +432,13 @@ A personal music server states its reach in one place - what it serves locally, 
 - **What the boundary excludes:** a clean result cannot speak to findings the file omits, findings produced after it was written, or severities the vocabulary could not map - those make the decision indeterminate, never a pass. Stale or truncated evidence is pending, not clean.
 
 These limits are properties of the input contract, not defects to fix in code. Supplying a complete, current findings file is the caller's responsibility. The gate reports the limits it applied so a reviewer can see exactly what was, and was not, evaluated.
+
+### Evidence level is not an effect
+
+An agent-action verification tool draws a line between a requested action, a reported execution and an observed effect, and confirms only at the evidence level the scenario requires: a reported action need not establish an effect, and a negative result does not prove security. It also states that a hash and a recomputation check a record's consistency, not authenticity, real-world events or causation. Sentinel applies the same ladder to what its checks can establish:
+
+- **Observed by the tool:** a `confirmed` check means the tool read its input and computed a result over those bytes. The parse, grouping and hash it reports are effects the tool itself produced from the supplied file.
+- **Reported by upstream:** the findings, observables and events in that file are claims from a scanner, log or operator. Sentinel does not execute them, contact a target or replay them, so it cannot promote a reported finding into an observed real-world effect.
+- **Bounded verdict:** an `allow`, a `pass` or a confirmed zero is a negative result at the tool's own evidence level - it means no matching evidence was found in the input, not that no risk exists. Like a "no breach observed" verdict, it is limited to the evidence level the input could support.
+
+This is an interpretation rule behind the outputs, not a change to any exit code or field. It is why a provenance hash establishes byte consistency rather than authenticity, and why a check can be `confirmed` while the finding behind it stays reported rather than observed.

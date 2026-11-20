@@ -215,6 +215,22 @@ A YAML prompt-injection scoring format states the limit of a checksum plainly: a
 
 The hash is computed from the single byte read that feeds the parser, so it always describes the bytes that produced the verdict; the file is opened read-only and never modified. Provenance is attached whenever the findings file was readable, including an indeterminate decision from unparsable or out-of-vocabulary evidence, because those bytes were still seen. An unreadable file yields no `source_files` entry at all and is a fail-closed exit `2`: the gate cannot tie a verdict to bytes it never read. The manifest establishes that a decision is consistent with a specific copy of the input; it does not prove that copy is genuine or complete, and scoring adds no maliciousness verdict to the source. `--prioritize` output is unchanged - the CSV remains the ranked findings only, with no provenance rows.
 
+### Confirmation worksheet (--checks)
+
+An SBOM generator marks an application whose last scan is too old as stale and never uses it silently: interactive selection is blocked, a single-item CLI run exits, and a collection run skips the stale item with a warning. The transferable rule is that an input which cannot be used gets an explicit status instead of being counted as clean. `releasegate.py` applies that rule to the checks behind its verdict. Every decision carries a `checks` array with one row per gate check in a fixed order, and `--checks` emits only that array as CSV:
+
+```bash
+python releasegate.py findings.json --checks > checks.csv
+```
+
+Columns, in order:
+
+- `check` - one of `parse`, `completeness`, `severity_vocabulary`, `cvss_validity`, `max_critical`, `max_high`, `max_total`.
+- `status` - a closed vocabulary: `confirmed` (the check ran and produced a result, which may still breach a limit), `not_confirmed` (the input could not be trusted or parsed, and is never clean), or `skipped` (the check did not apply to this decision).
+- `detail` - a short fact: a count, a limit, the unrecognized severity or the CVSS error. Empty for a skipped check.
+
+An unreadable findings file marks `parse` as `not_confirmed` and leaves every downstream check `skipped`, with exit `2`. A short parse marks `completeness` as `not_confirmed`, an unknown severity marks `severity_vocabulary` as `not_confirmed`, and invalid CVSS marks `cvss_validity` as `not_confirmed`; in each case the thresholds are `skipped` because they were never evaluated. A deny still reports each threshold as `confirmed` with its effective count and limit in `detail`, so `confirmed` means evaluated, not passed. The exit status (`0`/`1`/`2`) is unchanged and still gates on the verdict, and `--prioritize` takes precedence when both flags are supplied. Output is UTF-8 with LF endings and a trailing newline, so a committed worksheet changes only when the decision changes.
+
 ## IOC and timeline
 
 `iocscan.py` extracts typed observables (IPv4, domain, MD5/SHA-1/SHA-256), suppresses private and reserved ranges, dedupes by value and reports source lines. `timeline.py` groups timestamped events into sessions by source with a configurable gap and flags long dwell.

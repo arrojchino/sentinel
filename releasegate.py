@@ -37,6 +37,34 @@ BUCKETS = frozenset(CANONICAL.values())
 RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 CVSS_KEYS = ("cvss", "cvss_score", "cvssScore")
 
+# Closed per-check confirmation vocabulary. Borrowed from the SBOM generator's
+# stale-input rule: an input that cannot be used is marked explicitly and is
+# never silently treated as clean. ``not_confirmed`` is never clean; ``skipped``
+# means the check did not apply to this decision; ``confirmed`` means the check
+# ran and produced a result (which may still breach a limit).
+CHECK_CONFIRMED = "confirmed"
+CHECK_NOT_CONFIRMED = "not_confirmed"
+CHECK_SKIPPED = "skipped"
+CHECK_STATUSES = (CHECK_CONFIRMED, CHECK_NOT_CONFIRMED, CHECK_SKIPPED)
+CHECK_NAMES = ("parse", "completeness", "severity_vocabulary", "cvss_validity",
+               "max_critical", "max_high", "max_total")
+
+
+def _check(name: str, status: str, detail: str = "") -> dict:
+    """Build one confirmation row with a closed status and a short detail."""
+    return {"check": name, "status": status, "detail": detail}
+
+
+def _finalize_checks(rows: list) -> list:
+    """Return one row per check in fixed order, skipping ones not reported.
+
+    A fixed order makes both the CSV worksheet and the JSON ``checks`` array
+    byte-stable, and guarantees a caller sees every check the gate knows about
+    rather than only the ones that happened to run.
+    """
+    by_name = {row["check"]: row for row in rows}
+    return [by_name.get(name, _check(name, CHECK_SKIPPED)) for name in CHECK_NAMES]
+
 
 def band_for_score(score: float) -> str:
     """Map a CVSS v3.1 score onto a canonical bucket.
@@ -179,18 +207,30 @@ def decide(findings: list[dict], limits: dict,
     smap = CANONICAL if severity_map is None else severity_map
     counts = Counter(str(f.get("severity", "Unspecified")).lower() for f in findings)
     total = len(findings)
+    checks = [_check("parse", CHECK_CONFIRMED, f"{total} findings")]
     # A source may state how many findings it produced. Parsing fewer than that
     # is incomplete evidence, not a clean result: an upstream format change must
     # never shrink the parse into a false pass. Pending is never clean.
-    if claimed_total is not None and total < claimed_total:
+    if claimed_total is None:
+        checks.append(_check("completeness", CHECK_SKIPPED, "no claimed total"))
+    elif total < claimed_total:
+        checks.append(_check("completeness", CHECK_NOT_CONFIRMED,
+                             f"parsed {total} of claimed {claimed_total}"))
         return indeterminate(
             f"incomplete evidence: parsed {total} of claimed {claimed_total} findings",
-            limits, counts=dict(counts), total=total)
+            limits, counts=dict(counts), total=total, checks=checks)
+    else:
+        checks.append(_check("completeness", CHECK_CONFIRMED,
+                             f"{total} of {claimed_total}"))
     unrecognized = sorted(s for s in counts if s not in smap)
     if unrecognized:
+        checks.append(_check("severity_vocabulary", CHECK_NOT_CONFIRMED,
+                             ", ".join(unrecognized)))
         return indeterminate(
             "unrecognized severity (Unknown is not clean): " + ", ".join(unrecognized),
-            limits, counts=dict(counts), total=total)
+            limits, counts=dict(counts), total=total, checks=checks)
+    checks.append(_check("severity_vocabulary", CHECK_CONFIRMED,
+                         f"{len(counts)} distinct"))
     # Normalize every recognized name onto a canonical bucket, then rank each
     # finding on the higher of that bucket and its CVSS band. Declared buckets
     # stay in the report as evidence; effective buckets drive the thresholds.
@@ -198,14 +238,18 @@ def decide(findings: list[dict], limits: dict,
     effective = Counter()
     upgrades = []
     ranked = []
+    has_cvss = any(any(key in f for key in CVSS_KEYS) for f in findings)
+    if not has_cvss:
+        checks.append(_check("cvss_validity", CHECK_SKIPPED, "no cvss values"))
     for index, finding in enumerate(findings):
         name = str(finding.get("severity", "Unspecified")).lower()
         declared_bucket = smap[name]
         buckets[declared_bucket] += 1
         bucket, cvss, error = effective_bucket(finding, declared_bucket)
         if error:
+            checks.append(_check("cvss_validity", CHECK_NOT_CONFIRMED, error))
             return indeterminate(f"input error: invalid CVSS evidence: {error}",
-                                 limits, counts=dict(counts), total=total)
+                                 limits, counts=dict(counts), total=total, checks=checks)
         effective[bucket] += 1
         if bucket != declared_bucket:
             upgrades.append({"severity": name, "cvss": cvss,
@@ -214,6 +258,9 @@ def decide(findings: list[dict], limits: dict,
                        {"index": index, "severity": name,
                         "declared_bucket": declared_bucket, "bucket": bucket,
                         "cvss": cvss}))
+    if has_cvss:
+        checks.append(_check("cvss_validity", CHECK_CONFIRMED,
+                             f"{len(upgrades)} upgrades"))
     # An ordered "where to start" list for the reader: the highest-risk
     # finding leads. Ordering is deterministic and reproducible - effective
     # bucket descending, then the CVSS score that drove any upgrade descending,
@@ -227,15 +274,20 @@ def decide(findings: list[dict], limits: dict,
             reasons.append(f"{key}={effective[key]} exceeds max_{key}={limit}")
     if total > limits["max_total"]:
         reasons.append(f"total={total} exceeds max_total={limits['max_total']}")
+    for key in ("critical", "high"):
+        checks.append(_check(f"max_{key}", CHECK_CONFIRMED,
+                             f"effective={effective[key]} limit={limits['max_' + key]}"))
+    checks.append(_check("max_total", CHECK_CONFIRMED,
+                         f"total={total} limit={limits['max_total']}"))
     return {"verdict": "deny" if reasons else "allow",
             "counts": dict(counts), "buckets": dict(buckets),
             "effective_buckets": dict(effective), "upgrades": upgrades,
-            "prioritized": prioritized,
+            "prioritized": prioritized, "checks": _finalize_checks(checks),
             "total": total, "reasons": reasons, "limits": dict(limits)}
 
 
 def indeterminate(reason: str, limits: dict, *, counts: dict | None = None,
-                  total: int = 0) -> dict:
+                  total: int = 0, checks: list | None = None) -> dict:
     """Build a decision for evidence that could not be evaluated.
 
     Scan-health tooling makes the same distinction: an app with no published
@@ -245,10 +297,12 @@ def indeterminate(reason: str, limits: dict, *, counts: dict | None = None,
     to a parse shorter than the source's own claim - it is pending, not passing.
     Here the gate reports why it cannot decide and exits 2, so a caller can tell
     'denied by evidence' from 'could not evaluate'. Any counts supplied are kept
-    as evidence of what was actually seen.
+    as evidence of what was actually seen. The ``checks`` array reports the
+    closed per-check status: any check not explicitly reported is ``skipped``.
     """
     return {"verdict": "indeterminate", "counts": counts or {}, "total": total,
-            "reasons": [reason], "limits": dict(limits), "prioritized": []}
+            "reasons": [reason], "limits": dict(limits), "prioritized": [],
+            "checks": _finalize_checks(checks or [])}
 
 
 def prioritize_csv(rows: list) -> str:
@@ -268,6 +322,24 @@ def prioritize_csv(rows: list) -> str:
     for row in rows:
         writer.writerow((row["index"], row["severity"], row["declared_bucket"],
                          row["bucket"], row["cvss"] if row["cvss"] is not None else ""))
+    return buf.getvalue()
+
+
+def checks_csv(rows: list) -> str:
+    """Render the per-check confirmation worksheet as byte-stable CSV.
+
+    Column contract: ``check,status,detail`` -- one row per gate check in the
+    fixed ``CHECK_NAMES`` order. ``status`` is one of ``CHECK_STATUSES``:
+    ``confirmed`` means the check ran, ``not_confirmed`` means its input could
+    not be trusted or parsed (never clean), and ``skipped`` means it did not
+    apply. ``detail`` is a short human-readable fact and is empty for a skipped
+    check. LF terminator and a trailing newline keep the bytes deterministic.
+    """
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(("check", "status", "detail"))
+    for row in rows:
+        writer.writerow((row["check"], row["status"], row.get("detail", "")))
     return buf.getvalue()
 
 
@@ -291,6 +363,8 @@ def main(argv=None) -> int:
     p.add_argument("--prioritize", action="store_true",
                    help="emit only the prioritized 'where to start' list as triage CSV")
     p.add_argument("--out", help="write the output to a file instead of stdout")
+    p.add_argument("--checks", action="store_true",
+                   help="emit only the per-check confirmation worksheet as CSV (check,status,detail)")
     args = p.parse_args(argv)
     limits = dict(DEFAULTS)
     severity_map = dict(CANONICAL)
@@ -303,7 +377,10 @@ def main(argv=None) -> int:
             limits.update(rules)
         findings, claimed_total = load_findings(Path(args.file), raw)
     except (OSError, ValueError) as e:
-        result = indeterminate(f"input error: {type(e).__name__}: {str(e)[:160]}", limits)
+        result = indeterminate(
+            f"input error: {type(e).__name__}: {str(e)[:160]}", limits,
+            checks=[_check("parse", CHECK_NOT_CONFIRMED,
+                           f"{type(e).__name__}: {str(e)[:120]}")])
     else:
         result = decide(findings, limits, severity_map, claimed_total)
     # Provenance describes the exact bytes that were read for parsing. An
@@ -311,8 +388,12 @@ def main(argv=None) -> int:
     # cannot tie a verdict to bytes it never saw.
     if raw is not None:
         result["source_files"] = [source_manifest(args.file, raw)]
-    output = (prioritize_csv(result["prioritized"]) if args.prioritize
-              else json.dumps(result, indent=2) + "\n")
+    if args.prioritize:
+        output = prioritize_csv(result["prioritized"])
+    elif args.checks:
+        output = checks_csv(result["checks"])
+    else:
+        output = json.dumps(result, indent=2) + "\n"
     _emit(output, args.out)
     return EXIT_CODES[result["verdict"]]
 

@@ -401,5 +401,101 @@ class SourceProvenanceTests(unittest.TestCase):
             self.assertNotIn(b"source_files", r.stdout)
 
 
+class ConfirmationWorksheetTests(unittest.TestCase):
+    def test_vocabulary_is_closed_and_order_fixed(self):
+        r = g.decide([{"severity": "low"}], g.DEFAULTS)
+        self.assertEqual([c["check"] for c in r["checks"]], list(g.CHECK_NAMES))
+        self.assertTrue(all(c["status"] in g.CHECK_STATUSES for c in r["checks"]))
+
+    def test_clean_decision_confirms_evaluated_checks(self):
+        r = g.decide([{"severity": "low"}], g.DEFAULTS)
+        by = {c["check"]: c for c in r["checks"]}
+        self.assertEqual(by["parse"]["status"], "confirmed")
+        self.assertEqual(by["completeness"]["status"], "skipped")
+        self.assertEqual(by["cvss_validity"]["status"], "skipped")
+        self.assertEqual(by["max_total"]["status"], "confirmed")
+        self.assertIn("total=1", by["max_total"]["detail"])
+
+    def test_worksheet_has_documented_columns_and_fixed_rows(self):
+        rows = list(csv.reader(io.StringIO(
+            g.checks_csv(g.decide([{"severity": "low"}], g.DEFAULTS)["checks"]))))
+        self.assertEqual(rows[0], ["check", "status", "detail"])
+        self.assertEqual(len(rows), 1 + len(g.CHECK_NAMES))
+
+    def test_incomplete_marks_completeness_not_confirmed(self):
+        r = g.decide([{"severity": "low"}], g.DEFAULTS, claimed_total=4)
+        by = {c["check"]: c for c in r["checks"]}
+        self.assertEqual(r["verdict"], "indeterminate")
+        self.assertEqual(by["completeness"]["status"], "not_confirmed")
+        self.assertEqual(by["max_total"]["status"], "skipped")
+
+    def test_unrecognized_severity_marks_vocabulary_not_confirmed(self):
+        r = g.decide([{"severity": "mystery"}], g.DEFAULTS)
+        by = {c["check"]: c for c in r["checks"]}
+        self.assertEqual(by["severity_vocabulary"]["status"], "not_confirmed")
+        self.assertEqual(by["severity_vocabulary"]["detail"], "mystery")
+
+    def test_invalid_cvss_marks_cvss_not_confirmed(self):
+        r = g.decide([{"severity": "low", "cvss": "n/a"}], g.DEFAULTS)
+        by = {c["check"]: c for c in r["checks"]}
+        self.assertEqual(by["cvss_validity"]["status"], "not_confirmed")
+
+    def test_cvss_upgrade_marks_cvss_confirmed(self):
+        r = g.decide([{"severity": "low", "cvss": 9.8}], g.DEFAULTS)
+        by = {c["check"]: c for c in r["checks"]}
+        self.assertEqual(by["cvss_validity"]["status"], "confirmed")
+        self.assertIn("1 upgrades", by["cvss_validity"]["detail"])
+
+    def test_deny_still_confirms_threshold_checks(self):
+        r = g.decide([{"severity": "critical"}], g.DEFAULTS)
+        by = {c["check"]: c for c in r["checks"]}
+        self.assertEqual(r["verdict"], "deny")
+        self.assertEqual(by["max_critical"]["status"], "confirmed")
+        self.assertIn("effective=1", by["max_critical"]["detail"])
+
+    def test_json_envelope_carries_checks(self):
+        r = g.decide([{"severity": "low"}], g.DEFAULTS)
+        self.assertEqual(len(r["checks"]), len(g.CHECK_NAMES))
+
+    def test_cli_checks_is_byte_stable_and_gates_on_verdict(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "findings.json"
+            f.write_bytes(json.dumps([{"severity": "low", "cvss": 9.8}]).encode("utf-8"))
+            r = subprocess.run([sys.executable, str(Path(g.__file__).resolve()),
+                                str(f), "--checks"], capture_output=True)
+            self.assertEqual(r.returncode, 1)
+            self.assertEqual(r.stderr, b"")
+            self.assertNotIn(b"\r", r.stdout)
+            self.assertTrue(r.stdout.endswith(b"\n"))
+            rows = list(csv.reader(io.StringIO(r.stdout.decode("utf-8"))))
+            self.assertEqual(rows[0], ["check", "status", "detail"])
+            self.assertEqual(len(rows), 1 + len(g.CHECK_NAMES))
+            by = {row[0]: row[1] for row in rows[1:]}
+            self.assertEqual(by["parse"], "confirmed")
+            self.assertEqual(by["max_critical"], "confirmed")
+
+    def test_cli_checks_on_unreadable_input_marks_parse_not_confirmed(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = subprocess.run([sys.executable, str(Path(g.__file__).resolve()),
+                                str(Path(d) / "missing.json"), "--checks"],
+                               capture_output=True)
+            self.assertEqual(r.returncode, 2)
+            self.assertEqual(r.stderr, b"")
+            self.assertNotIn(b"\r", r.stdout)
+            rows = list(csv.reader(io.StringIO(r.stdout.decode("utf-8"))))
+            by = {row[0]: row[1] for row in rows[1:]}
+            self.assertEqual(by["parse"], "not_confirmed")
+            self.assertEqual(by["max_total"], "skipped")
+
+    def test_prioritize_still_takes_precedence_over_checks(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "findings.json"
+            f.write_bytes(json.dumps([{"severity": "critical"}]).encode("utf-8"))
+            r = subprocess.run([sys.executable, str(Path(g.__file__).resolve()),
+                                str(f), "--prioritize", "--checks"], capture_output=True)
+            self.assertEqual(r.returncode, 1)
+            self.assertTrue(r.stdout.decode("utf-8").startswith("index,severity,"))
+
+
 if __name__ == "__main__":
     unittest.main()

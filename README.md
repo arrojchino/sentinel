@@ -232,7 +232,20 @@ The hash is computed from the single byte read that feeds the parser, so it alwa
 
 An SBOM generator marks an application stale when its last scan is older than 13 months: a stale item cannot be selected silently, a single-item run exits, and a collection run skips it with a warning. A personal visual archive makes the same distinction in a quieter way - it is a record of a moment that has passed, not a claim about the present. A provenance hash is that kind of record. It binds a decision to the exact bytes that were read, but it says nothing about when those bytes were produced: a findings file from fourteen months ago hashes exactly as it did on the day it was written, and re-hashing it today does not make it current.
 
-`releasegate.py` does not check scan age and has no freshness field in its checks or JSON report. The verdict describes the evidence supplied, so a caller must pass findings from a scan recent enough to support a current decision. A `confirmed` check means a value was evaluated against its limit; it does not mean the evidence is fresh. Treat age as an input contract enforced upstream, not as something the hash or the worksheet can prove.
+By default `releasegate.py` does not check scan age: the verdict describes only the evidence supplied, and a `confirmed` check means a value was evaluated against its limit, not that the evidence is fresh. The opt-in `--max-age-days N` below closes that gap. Without it the JSON report carries no freshness field and the worksheet is unchanged, so age stays an input contract the caller enforces upstream - something neither the hash nor the worksheet can prove. In both modes a hash establishes consistency, not authenticity, completeness or causation, and scoring adds no maliciousness verdict to the source.
+
+### Evidence freshness (--max-age-days)
+
+The same SBOM stale-scan rule that blocks a too-old application is now an explicit boundary on findings. `releasegate.py --max-age-days N` reads a first-observed date from each finding under the first available key (`first_found`, `firstFound`, `first_found_date`, `found_date`, `first_seen`, `discovered`, `date`, `timestamp`), accepts ISO-8601 strings (including `Z`, a space separator and a colonless numeric UTC offset) or epoch seconds, and checks the age of the newest observation against the limit:
+
+```bash
+python releasegate.py findings.json --max-age-days 30
+python releasegate.py findings.json --max-age-days 30 --checks > checks.csv
+```
+
+The `freshness` row uses the shared closed vocabulary. `confirmed` means a parseable newest date was within the limit and the verdict is unchanged. `not_confirmed` means the newest date breaches the limit or no finding has a parseable date; the verdict is forced to `indeterminate` with exit `2` even when every finding count is within limits, `prioritized` is cleared, and the reasons lead with `stale evidence:`. An unreadable file keeps its existing input-error `indeterminate` (exit `2`) and reports `freshness` as `not_confirmed` with `input unreadable; freshness not evaluated` - no separate override.
+
+The JSON report gains `freshness` (`status`, `breach`, `newest`, `age_days`, `max_age_days`, `dated`, `total`, `detail`), `newest_finding_date`, `newest_finding_age_days`, and an appended `freshness` row in `checks`; the `--checks` CSV gains that same row as a ninth line. Age is a necessary but not sufficient condition for a pass: a fresh findings file is still denied if its severities breach a threshold. The flag is opt-in - without it the decision, worksheet and JSON are byte-identical to the default gate (no freshness field, seven checks), so existing consumers are unaffected.
 
 ### Confirmation worksheet (--checks)
 
@@ -244,7 +257,7 @@ python releasegate.py findings.json --checks > checks.csv
 
 Columns, in order:
 
-- `check` - one of `parse`, `completeness`, `severity_vocabulary`, `cvss_validity`, `max_critical`, `max_high`, `max_total`.
+- `check` - one of `parse`, `completeness`, `severity_vocabulary`, `cvss_validity`, `max_critical`, `max_high`, `max_total`, plus `freshness` as the last row when `--max-age-days` is set.
 - `status` - a closed vocabulary: `confirmed` (the check ran and produced a result, which may still breach a limit), `not_confirmed` (the input could not be trusted or parsed, and is never clean), or `skipped` (the check did not apply to this decision).
 - `detail` - a short fact: a count, a limit, the unrecognized severity or the CVSS error. Empty for a skipped check.
 

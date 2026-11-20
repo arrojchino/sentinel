@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -578,6 +579,109 @@ class ReleasegateSelftestTests(unittest.TestCase):
         payload = json.loads(proc.stdout)
         self.assertEqual(payload["status"], "pass")
         self.assertEqual(payload["verdict"], "deny")
+
+
+class FreshnessTests(unittest.TestCase):
+    NOW = datetime(2026, 11, 20, tzinfo=timezone.utc)
+
+    def test_recent_finding_is_confirmed(self):
+        f = g.freshness([{"severity": "low", "first_found": "2026-11-19T00:00:00Z"}],
+                        7, now=self.NOW)
+        self.assertEqual(f["status"], "confirmed")
+        self.assertFalse(f["breach"])
+        self.assertAlmostEqual(f["age_days"], 1.0, places=3)
+        self.assertEqual(f["dated"], 1)
+
+    def test_stale_finding_is_not_confirmed(self):
+        f = g.freshness([{"severity": "low", "date": "2026-10-01T00:00:00Z"}],
+                        7, now=self.NOW)
+        self.assertEqual(f["status"], "not_confirmed")
+        self.assertTrue(f["breach"])
+        self.assertGreater(f["age_days"], 7)
+
+    def test_no_parseable_date_is_not_confirmed(self):
+        f = g.freshness([{"severity": "low"}, {"severity": "high", "date": "n/a"}],
+                        7, now=self.NOW)
+        self.assertEqual(f["status"], "not_confirmed")
+        self.assertTrue(f["breach"])
+        self.assertIsNone(f["newest"])
+        self.assertIsNone(f["age_days"])
+        self.assertIn("no parseable date", f["detail"])
+
+    def test_newest_observation_wins(self):
+        rows = [{"date": "2026-10-01T00:00:00Z"},
+                {"first_found": "2026-11-19T12:00:00Z"}]
+        f = g.freshness(rows, 7, now=self.NOW)
+        self.assertEqual(f["status"], "confirmed")
+        self.assertEqual(f["dated"], 2)
+        self.assertEqual(f["newest"], "2026-11-19T12:00:00+00:00")
+
+    def test_date_parser_variants(self):
+        self.assertEqual(g.parse_finding_date("2026-11-19T00:00:00Z"),
+                         datetime(2026, 11, 19, tzinfo=timezone.utc))
+        self.assertEqual(g.parse_finding_date("2026-11-19 00:00:00-0600"),
+                         datetime(2026, 11, 19, 6, tzinfo=timezone.utc))
+        self.assertEqual(g.parse_finding_date(True), None)
+        self.assertEqual(g.parse_finding_date("not a date"), None)
+
+    def test_positive_days_rejects_bad_values(self):
+        for raw in ("0", "-1", "nan", "abc"):
+            with self.subTest(raw=raw), self.assertRaises(Exception):
+                g._positive_days(raw)
+        self.assertEqual(g._positive_days("7"), 7.0)
+
+    def test_cli_stale_exits_2_with_indeterminate_and_freshness_row(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "findings.json"
+            f.write_text(json.dumps([{"severity": "low", "date": "2026-01-01T00:00:00Z"}]),
+                         encoding="utf-8")
+            r = subprocess.run([sys.executable, str(Path(g.__file__).resolve()),
+                                str(f), "--max-age-days", "7", "--checks"],
+                               capture_output=True)
+            self.assertEqual(r.returncode, 2)
+            self.assertEqual(r.stderr, b"")
+            self.assertNotIn(b"\r", r.stdout)
+            rows = list(csv.reader(io.StringIO(r.stdout.decode("utf-8"))))
+            by = {row[0]: (row[1], row[2]) for row in rows[1:]}
+            self.assertEqual(by["freshness"][0], "not_confirmed")
+
+    def test_cli_stale_json_forces_indeterminate_over_allow(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "findings.json"
+            f.write_text(json.dumps([{"severity": "low", "date": "2026-01-01T00:00:00Z"}]),
+                         encoding="utf-8")
+            r = subprocess.run([sys.executable, str(Path(g.__file__).resolve()),
+                                str(f), "--max-age-days", "7"], capture_output=True)
+            self.assertEqual(r.returncode, 2)
+            out = json.loads(r.stdout)
+            self.assertEqual(out["verdict"], "indeterminate")
+            self.assertTrue(out["reasons"][0].startswith("stale evidence:"))
+            self.assertEqual(out["freshness"]["status"], "not_confirmed")
+            self.assertEqual(out["prioritized"], [])
+
+    def test_cli_fresh_within_limit_keeps_allow(self):
+        with tempfile.TemporaryDirectory() as d:
+            recent = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+            f = Path(d) / "findings.json"
+            f.write_text(json.dumps([{"severity": "low", "date": recent}]), encoding="utf-8")
+            r = subprocess.run([sys.executable, str(Path(g.__file__).resolve()),
+                                str(f), "--max-age-days", "7"], capture_output=True)
+            self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace"))
+            out = json.loads(r.stdout)
+            self.assertEqual(out["verdict"], "allow")
+            self.assertEqual(out["freshness"]["status"], "confirmed")
+            self.assertIsNotNone(out["newest_finding_date"])
+
+    def test_default_output_has_no_freshness_field(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "findings.json"
+            f.write_bytes(json.dumps([{"severity": "low"}]).encode("utf-8"))
+            base = subprocess.run([sys.executable, str(Path(g.__file__).resolve()),
+                                   str(f)], capture_output=True)
+            self.assertEqual(base.returncode, 0)
+            out = json.loads(base.stdout)
+            self.assertNotIn("freshness", out)
+            self.assertEqual(len(out["checks"]), len(g.CHECK_NAMES))
 
 
 if __name__ == "__main__":

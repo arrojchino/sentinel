@@ -14,6 +14,7 @@ import io
 import json
 import sys
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -36,6 +37,15 @@ BUCKETS = frozenset(CANONICAL.values())
 # be hidden behind a low declared severity.
 RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 CVSS_KEYS = ("cvss", "cvss_score", "cvssScore")
+
+# A finding may carry the date it was first observed under one of several
+# names used by common scanners (the export vocabulary calls it "First Found
+# Date"). The gate reads the first key that parses and never guesses: no
+# parseable date is not current evidence, so freshness fails closed.
+FINDING_DATE_KEYS = (
+    "first_found", "firstFound", "first_found_date", "found_date",
+    "first_seen", "discovered", "date", "timestamp",
+)
 
 # Closed per-check confirmation vocabulary. Borrowed from the SBOM generator's
 # stale-input rule: an input that cannot be used is marked explicitly and is
@@ -199,6 +209,78 @@ def source_manifest(path: str | Path, data: bytes | None = None) -> dict:
         "lines": sum(1 for line in text.splitlines() if line.strip()),
         "sha256": hashlib.sha256(data).hexdigest(),
     }
+
+
+def parse_finding_date(value) -> datetime | None:
+    """Parse a finding date into an aware UTC datetime, or None.
+
+    Accepts ISO-8601 strings (including a trailing ``Z``, a space separator
+    and a colonless numeric UTC offset such as ``-0600``) and epoch seconds.
+    An unparseable value returns None so freshness can fail closed instead of
+    treating an unknown date as current. Naive values are assumed UTC.
+    """
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        except (ValueError, OverflowError, OSError):
+            return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    if " " in text and "T" not in text:
+        text = text.replace(" ", "T", 1)
+    if len(text) >= 5 and text[-5] in "+-" and text[-4:].isdigit():
+        text = text[:-5] + text[-5] + text[-4:-2] + ":" + text[-2:]
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def freshness(findings: list[dict], max_age_days: float,
+              now: datetime | None = None) -> dict:
+    """Evaluate the newest finding observation date against a max-age limit.
+
+    A provenance hash binds a verdict to exact bytes but says nothing about
+    when those bytes were collected. This carries the stale-scan rule into the
+    gate: evidence whose newest observation is older than the limit, or that
+    carries no parseable date, cannot support a release decision and is marked
+    ``not_confirmed`` (never clean). The check is opt-in, so an unchanged run
+    produces byte-identical output. ``status`` is one of CHECK_STATUSES.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    dates = []
+    for finding in findings:
+        for key in FINDING_DATE_KEYS:
+            if key not in finding:
+                continue
+            parsed = parse_finding_date(finding[key])
+            if parsed is not None:
+                dates.append(parsed)
+                break
+    total = len(findings)
+    if not dates:
+        return {"status": CHECK_NOT_CONFIRMED, "breach": True, "newest": None,
+                "age_days": None, "max_age_days": max_age_days, "dated": 0,
+                "total": total,
+                "detail": f"no parseable date in {total} finding(s)"}
+    newest = max(dates)
+    age_days = (now - newest).total_seconds() / 86400.0
+    breach = age_days > max_age_days
+    return {"status": CHECK_NOT_CONFIRMED if breach else CHECK_CONFIRMED,
+            "breach": breach, "newest": newest.isoformat(timespec="seconds"),
+            "age_days": round(age_days, 4), "max_age_days": max_age_days,
+            "dated": len(dates), "total": total,
+            "detail": (f"newest finding {age_days:.2f}d old, limit "
+                       f"{max_age_days:g}d, {len(dates)}/{total} dated")}
 
 
 def decide(findings: list[dict], limits: dict,
@@ -464,6 +546,17 @@ def _emit(output: str, out: str | None) -> None:
         buffer.write(data)
 
 
+def _positive_days(raw) -> float:
+    """argparse type: a strictly positive, finite age limit in days."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("--max-age-days must be a positive number")
+    if value <= 0 or value != value:  # reject zero, negatives and NaN
+        raise argparse.ArgumentTypeError("--max-age-days must be a positive number")
+    return value
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Release gate from findings to verdict")
     p.add_argument("file", nargs="?", help="findings JSON file")
@@ -475,6 +568,8 @@ def main(argv=None) -> int:
     p.add_argument("--out", help="write the output to a file instead of stdout")
     p.add_argument("--checks", action="store_true",
                    help="emit only the per-check confirmation worksheet as CSV (check,status,detail)")
+    p.add_argument("--max-age-days", type=_positive_days, default=None,
+                   help="fail closed (exit 2) when the newest finding date is older than this many days")
     args = p.parse_args(argv)
     if args.selftest:
         st = selftest(Path(__file__).resolve().parent)
@@ -485,6 +580,7 @@ def main(argv=None) -> int:
     limits = dict(DEFAULTS)
     severity_map = dict(CANONICAL)
     raw = None
+    findings = None
     try:
         raw = Path(args.file).read_bytes()
         if args.rules:
@@ -504,6 +600,29 @@ def main(argv=None) -> int:
     # cannot tie a verdict to bytes it never saw.
     if raw is not None:
         result["source_files"] = [source_manifest(args.file, raw)]
+    # Freshness is opt-in: without --max-age-days the decision, worksheet and
+    # JSON are byte-identical to the original gate. When requested, a freshness
+    # row is appended to the confirmation worksheet (check,status,detail) and
+    # the newest observation is reported alongside the verdict. A stale or
+    # undated input is not current evidence and forces an indeterminate exit 2
+    # even when its finding counts are otherwise within the limits.
+    if args.max_age_days is not None:
+        if findings is not None:
+            f = freshness(findings, args.max_age_days)
+        else:
+            f = {"status": CHECK_NOT_CONFIRMED, "breach": False, "newest": None,
+                 "age_days": None, "max_age_days": args.max_age_days,
+                 "dated": 0, "total": 0,
+                 "detail": "input unreadable; freshness not evaluated"}
+        result["freshness"] = f
+        result["newest_finding_date"] = f["newest"]
+        result["newest_finding_age_days"] = f["age_days"]
+        result["checks"] = list(result["checks"]) + [
+            _check("freshness", f["status"], f["detail"])]
+        if f["breach"]:
+            result["verdict"] = "indeterminate"
+            result["prioritized"] = []
+            result["reasons"] = [f"stale evidence: {f['detail']}"] + result.get("reasons", [])
     if args.prioritize:
         output = prioritize_csv(result["prioritized"])
     elif args.checks:

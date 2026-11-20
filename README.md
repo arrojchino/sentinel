@@ -207,6 +207,23 @@ Columns, in order:
 
 One row is emitted per (type, value, line) occurrence, so an observable seen on several lines keeps every location even after deduplication. Rows follow the deterministic (type, value, then line) order used by the JSON findings. Output is UTF-8 with LF endings and a trailing newline, so a committed triage CSV changes only when the observables change and never produces a platform-newline diff. `--out` writes the same bytes to a file instead of stdout. The exit status (`0`/`1`/`2`) is unchanged: `1` with findings, `0` without, and `2` for an incomplete parse or an input error, so a caller can still gate on evidence quality while handing the CSV to a reviewer.
 
+### Timeline review handoff (--prioritize)
+
+A local identity-timeline tool keeps a compact worksheet of records that need review beside its full evidence workbook, and never discards a matching record just because it is out of policy: an unusual dwell is flagged for the analyst, still listed in the ordered activity. `timeline.py --prioritize` applies the same shape with a documented schema and no JSON envelope or prose. stdout carries only the session summaries as CSV:
+
+```bash
+python timeline.py alerts.jsonl --gap 900 --max-span 3600 --prioritize > sessions.csv
+```
+
+Columns, in order:
+
+- `session` - the 1-based session position in chronological order.
+- `source` - the source key that grouped the session (`source`, or `srcip` when absent).
+- `event_count` - number of events in the session.
+- `long_dwell` - lowercase `true` or `false`; `true` when the session span exceeded `--max-span` and needs review.
+
+One row is emitted per session, so a flagged dwell is handed off for review but never dropped: the CSV is a complete view of the grouped evidence, and the JSON report stays the authoritative record. Rows follow the deterministic chronological order of the JSON groups, so the first data row is the earliest session. Output is UTF-8 with LF endings and a trailing newline, so a committed handoff changes only when sessions change and never produces a platform-newline diff. `--out` writes the same bytes to a file instead of stdout. The exit status is unchanged: `1` when any session has a long dwell, `0` otherwise, so a caller can still gate on dwell policy while giving the CSV to a reviewer.
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push and pull request. It executes the

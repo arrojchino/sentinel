@@ -146,5 +146,74 @@ class TimelineTests(unittest.TestCase):
         self.assertTrue(r["groups"][0]["long_dwell"])
 
 
+class TimelinePrioritizeCsvTests(unittest.TestCase):
+    FIXTURE = (
+        '{"timestamp": "2026-01-01T08:00:00", "source": "clean"}\n'
+        '{"timestamp": "2026-01-01T08:00:30", "source": "clean"}\n'
+        '{"timestamp": "2026-01-01T10:00:00", "source": "long"}\n'
+        '{"timestamp": "2026-01-01T12:00:00", "source": "long"}\n'
+    )
+
+    def test_column_contract_and_deterministic_bytes(self):
+        result = tl.sessions(
+            [json.loads(line) for line in self.FIXTURE.splitlines()],
+            gap_seconds=9000, max_span_seconds=3600)
+        csv_text = tl.prioritize_csv(result)
+        self.assertTrue(csv_text.startswith("session,source,event_count,long_dwell\n"))
+        self.assertNotIn("\r", csv_text)
+        self.assertTrue(csv_text.endswith("\n"))
+        self.assertEqual(csv_text, tl.prioritize_csv(result))
+
+    def test_one_row_per_session_in_chronological_order(self):
+        result = tl.sessions(
+            [json.loads(line) for line in self.FIXTURE.splitlines()],
+            gap_seconds=9000, max_span_seconds=3600)
+        rows = list(csv.reader(io.StringIO(tl.prioritize_csv(result))))
+        self.assertEqual(rows[0], ["session", "source", "event_count", "long_dwell"])
+        self.assertEqual(rows[1], ["1", "clean", "2", "false"])
+        self.assertEqual(rows[2], ["2", "long", "2", "true"])
+
+    def test_empty_result_emits_header_only(self):
+        rows = list(csv.reader(io.StringIO(tl.prioritize_csv(tl.sessions([], 900, 3600)))))
+        self.assertEqual(rows, [["session", "source", "event_count", "long_dwell"]])
+
+    def test_cli_prioritize_exit_codes_and_parse(self):
+        with tempfile.TemporaryDirectory() as d:
+            mixed = Path(d) / "mixed.jsonl"
+            mixed.write_text(self.FIXTURE, encoding="utf-8")
+            clean = Path(d) / "clean.jsonl"
+            clean.write_text(
+                '{"timestamp": "2026-01-01T08:00:00", "source": "clean"}\n'
+                '{"timestamp": "2026-01-01T08:00:30", "source": "clean"}\n',
+                encoding="utf-8")
+
+            def run(path, *extra):
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    code = tl.main([str(path), "--gap", "9000", "--prioritize", *extra])
+                return code, buf.getvalue(), list(csv.reader(io.StringIO(buf.getvalue())))
+
+            code, raw, rows = run(mixed)
+            self.assertEqual(code, 1)  # long dwell denies, as in the JSON path
+            self.assertNotIn("\r", raw)
+            self.assertEqual(rows[0], ["session", "source", "event_count", "long_dwell"])
+            self.assertEqual(rows[2], ["2", "long", "2", "true"])
+            code, raw, rows = run(clean)
+            self.assertEqual(code, 0)
+            self.assertEqual(rows[1][3], "false")
+
+    def test_out_writes_same_bytes_as_stdout(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "in.jsonl"
+            src.write_text(self.FIXTURE, encoding="utf-8")
+            out = Path(d) / "sessions.csv"
+            with contextlib.redirect_stdout(io.StringIO()):
+                tl.main([str(src), "--gap", "9000", "--prioritize", "--out", str(out)])
+            result = tl.sessions(
+                [json.loads(line) for line in self.FIXTURE.splitlines()],
+                gap_seconds=9000, max_span_seconds=3600)
+            self.assertEqual(out.read_bytes(), tl.prioritize_csv(result).encode("utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()
